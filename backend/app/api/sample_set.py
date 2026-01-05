@@ -74,10 +74,17 @@ def create_sample_set():
         if not data.get('name'):
             return jsonify({'code': 400, 'message': '样本集名称不能为空'}), 400
         
+        # 处理关键字列表
+        keywords = data.get('keywords', [])
+        keywords_json = None
+        if keywords and isinstance(keywords, list):
+            keywords_json = json.dumps(keywords, ensure_ascii=False)
+        
         # 创建样本集
         sample_set = SampleSet(
             name=data['name'],
             description=data.get('description'),
+            keywords_json=keywords_json,
             status=data.get('status', 'active')
         )
         
@@ -158,9 +165,16 @@ def update_sample_set(sample_set_id):
         if not data.get('name'):
             return jsonify({'code': 400, 'message': '样本集名称不能为空'}), 400
         
+        # 处理关键字列表
+        keywords = data.get('keywords', [])
+        keywords_json = None
+        if keywords and isinstance(keywords, list):
+            keywords_json = json.dumps(keywords, ensure_ascii=False)
+        
         # 更新字段
         sample_set.name = data['name']
         sample_set.description = data.get('description')
+        sample_set.keywords_json = keywords_json
         sample_set.status = data.get('status', sample_set.status)
         sample_set.updated_at = datetime.now()
         
@@ -229,6 +243,64 @@ def update_sample_set(sample_set_id):
         current_app.logger.error(f"更新样本集失败: {error_detail}")
         return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
 
+@bp.route('/<int:sample_set_id>/copy', methods=['POST'])
+def copy_sample_set(sample_set_id):
+    """复制样本集"""
+    try:
+        # 获取源样本集
+        source_sample_set = SampleSet.query.get_or_404(sample_set_id)
+        
+        # 生成新样本集名称（添加"副本"后缀）
+        new_name = f"{source_sample_set.name}_副本"
+        # 如果名称已存在，添加序号
+        counter = 1
+        while SampleSet.query.filter_by(name=new_name).first():
+            counter += 1
+            new_name = f"{source_sample_set.name}_副本{counter}"
+        
+        # 创建新样本集（复制所有配置，但重置图片数量和打包状态）
+        new_sample_set = SampleSet(
+            name=new_name,
+            description=source_sample_set.description,
+            keywords_json=source_sample_set.keywords_json,  # 直接复制JSON字符串
+            status='active',  # 新样本集默认启用
+            image_count=0,  # 图片数量重置为0
+            package_status='unpacked',  # 打包状态重置
+            package_path=None,
+            packaged_at=None
+        )
+        
+        db.session.add(new_sample_set)
+        db.session.flush()  # 获取ID
+        
+        # 复制特征配置
+        source_features = SampleSetFeature.query.filter_by(sample_set_id=sample_set_id).all()
+        for source_feature in source_features:
+            new_feature = SampleSetFeature(
+                sample_set_id=new_sample_set.id,
+                feature_id=source_feature.feature_id,
+                feature_name=source_feature.feature_name,
+                value_range=source_feature.value_range,  # 直接复制JSON字符串
+                value_type=source_feature.value_type
+            )
+            db.session.add(new_feature)
+        
+        db.session.commit()
+        
+        current_app.logger.info(f"样本集已复制: source_sample_set_id={sample_set_id}, new_sample_set_id={new_sample_set.id}, name={new_sample_set.name}")
+        
+        return jsonify({
+            'code': 200,
+            'message': '样本集复制成功',
+            'data': new_sample_set.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        error_detail = traceback.format_exc()
+        current_app.logger.error(f"复制样本集失败: {error_detail}")
+        return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
+
 @bp.route('/<int:sample_set_id>', methods=['DELETE'])
 def delete_sample_set(sample_set_id):
     """删除样本集"""
@@ -280,6 +352,13 @@ def calculate_sample_set_data(sample_set_id):
         result = service.calculate_sample_set_data(sample_set_id)
         
         if result['success']:
+            # 更新需求关联任务状态
+            try:
+                from app.api.requirement import check_and_update_requirement_task_status
+                check_and_update_requirement_task_status('sample_set', sample_set_id)
+            except Exception as e:
+                current_app.logger.warning(f"更新需求任务状态失败: {e}")
+            
             return jsonify({
                 'code': 200,
                 'message': result['message'],
@@ -388,8 +467,7 @@ def get_sample_set_images(sample_set_id):
 def get_feature_distribution(sample_set_id):
     """获取样本集的特征分布"""
     try:
-        from app.models.image_tagging_result import ImageTaggingResult
-        from sqlalchemy import func
+        from app.models.image_tagging_result_detail import ImageTaggingResultDetail
         
         # 验证样本集是否存在
         sample_set = SampleSet.query.get_or_404(sample_set_id)
@@ -410,28 +488,10 @@ def get_feature_distribution(sample_set_id):
             sample_set_id=sample_set_id
         ).subquery()
         
-        # 获取最新的打标结果（按image_id和feature_id分组，取最新的updated_at）
-        subquery = db.session.query(
-            ImageTaggingResult.image_id,
-            ImageTaggingResult.feature_id,
-            func.max(ImageTaggingResult.updated_at).label('max_updated_at')
-        ).filter(
-            ImageTaggingResult.image_id.in_(db.session.query(sample_set_image_ids))
-        ).group_by(
-            ImageTaggingResult.image_id,
-            ImageTaggingResult.feature_id
-        ).subquery()
-        
-        # 获取最新的打标结果
-        latest_results = db.session.query(ImageTaggingResult).join(
-            subquery,
-            db.and_(
-                ImageTaggingResult.image_id == subquery.c.image_id,
-                ImageTaggingResult.feature_id == subquery.c.feature_id,
-                ImageTaggingResult.updated_at == subquery.c.max_updated_at
-            )
-        ).filter(
-            ImageTaggingResult.feature_id.in_([f.feature_id for f in features])
+        # 从明细表直接查询打标结果（每个图片每个特征只有一条记录）
+        latest_results = ImageTaggingResultDetail.query.filter(
+            ImageTaggingResultDetail.image_id.in_(db.session.query(sample_set_image_ids)),
+            ImageTaggingResultDetail.feature_id.in_([f.feature_id for f in features])
         ).all()
         
         # 统计每个特征值的分布
@@ -482,6 +542,15 @@ def package_sample_set(sample_set_id):
     try:
         sample_set = SampleSet.query.get_or_404(sample_set_id)
         
+        # 检查是否有需求关联，如果有，检查前置任务是否完成
+        try:
+            from app.api.requirement import check_prerequisite_tasks
+            is_ok, error_msg = check_prerequisite_tasks('sample_set', sample_set_id)
+            if not is_ok:
+                return jsonify({'code': 400, 'message': error_msg}), 400
+        except Exception as e:
+            current_app.logger.warning(f"检查前置任务失败: {e}")
+        
         # 检查是否正在打包
         if sample_set.package_status == 'packing':
             return jsonify({
@@ -529,6 +598,15 @@ def download_sample_set_package(sample_set_id):
     """下载样本集压缩包"""
     try:
         sample_set = SampleSet.query.get_or_404(sample_set_id)
+        
+        # 检查是否有需求关联，如果有，检查前置任务是否完成
+        try:
+            from app.api.requirement import check_prerequisite_tasks
+            is_ok, error_msg = check_prerequisite_tasks('sample_set', sample_set_id)
+            if not is_ok:
+                return jsonify({'code': 400, 'message': error_msg}), 400
+        except Exception as e:
+            current_app.logger.warning(f"检查前置任务失败: {e}")
         
         if sample_set.package_status != 'packed':
             return jsonify({

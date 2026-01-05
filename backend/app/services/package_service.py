@@ -14,6 +14,7 @@ from app.database import db
 from app.models.sample_set import SampleSet, SampleSetFeature, SampleSetImage
 from app.models.image import Image
 from app.models.image_tagging_result import ImageTaggingResult
+from app.models.image_tagging_result_detail import ImageTaggingResultDetail
 from app.models.feature import Feature
 from app.utils.config_manager import get_local_image_dir, get_package_storage_dir
 
@@ -133,35 +134,13 @@ class PackageService:
                 features = SampleSetFeature.query.filter_by(sample_set_id=sample_set_id).all()
                 feature_map = {f.feature_id: f for f in features}
                 
-                # 获取所有图片的打标结果
+                # 获取所有图片的打标结果（从明细表直接查询）
                 image_ids = list(image_features_map.keys())
                 if image_ids:
-                    tagging_results = ImageTaggingResult.query.filter(
-                        ImageTaggingResult.image_id.in_(image_ids),
-                        ImageTaggingResult.feature_id.in_([f.feature_id for f in features])
-                    ).all()
-                    
-                    # 按图片ID和特征ID分组，取最新的打标结果
-                    from sqlalchemy import func
-                    subquery = db.session.query(
-                        ImageTaggingResult.image_id,
-                        ImageTaggingResult.feature_id,
-                        func.max(ImageTaggingResult.updated_at).label('max_updated_at')
-                    ).filter(
-                        ImageTaggingResult.image_id.in_(image_ids),
-                        ImageTaggingResult.feature_id.in_([f.feature_id for f in features])
-                    ).group_by(
-                        ImageTaggingResult.image_id,
-                        ImageTaggingResult.feature_id
-                    ).subquery()
-                    
-                    latest_results = db.session.query(ImageTaggingResult).join(
-                        subquery,
-                        db.and_(
-                            ImageTaggingResult.image_id == subquery.c.image_id,
-                            ImageTaggingResult.feature_id == subquery.c.feature_id,
-                            ImageTaggingResult.updated_at == subquery.c.max_updated_at
-                        )
+                    # 从明细表直接查询，每个图片每个特征只有一条记录（最新的）
+                    latest_results = ImageTaggingResultDetail.query.filter(
+                        ImageTaggingResultDetail.image_id.in_(image_ids),
+                        ImageTaggingResultDetail.feature_id.in_([f.feature_id for f in features])
                     ).all()
                     
                     # 填充图片特征信息

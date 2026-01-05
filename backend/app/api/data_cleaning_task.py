@@ -181,6 +181,15 @@ def execute_task(task_id):
         # 检查任务是否存在
         task = DataCleaningTask.query.get_or_404(task_id)
         
+        # 检查是否有需求关联，如果有，检查前置任务是否完成
+        try:
+            from app.api.requirement import check_prerequisite_tasks
+            is_ok, error_msg = check_prerequisite_tasks('cleaning', task_id)
+            if not is_ok:
+                return jsonify({'code': 400, 'message': error_msg}), 400
+        except Exception as e:
+            current_app.logger.warning(f"检查前置任务失败: {e}")
+        
         # 检查任务状态
         if task.status == 'running':
             return jsonify({
@@ -237,32 +246,34 @@ def execute_task(task_id):
 
 @bp.route('/<int:task_id>/reset', methods=['POST'])
 def reset_task(task_id):
-    """重置数据清洗任务"""
+    """重置数据清洗任务（包括运行中的任务）"""
     try:
         # 检查任务是否存在
         task = DataCleaningTask.query.get_or_404(task_id)
         
-        # 检查任务状态，只有completed或failed状态的任务才能重置
-        if task.status == 'running':
-            return jsonify({
-                'code': 400,
-                'message': '任务正在执行中，无法重置'
-            }), 400
+        # 如果任务正在运行，先标记为失败（后台线程会检测到状态变化）
+        was_running = task.status == 'running'
+        if was_running:
+            current_app.logger.warning(f"重置运行中的任务: task_id={task_id}, name={task.name}")
         
         # 重置任务状态
         task.status = 'pending'
         task.processed_count = 0
+        task.total_count = 0
         task.last_error = None
         task.started_at = None
         task.finished_at = None
         
         db.session.commit()
         
-        current_app.logger.info(f"任务已重置: task_id={task_id}, name={task.name}")
+        if was_running:
+            current_app.logger.info(f"运行中的任务已重置: task_id={task_id}, name={task.name}，后台线程会在下次检查状态时停止")
+        else:
+            current_app.logger.info(f"任务已重置: task_id={task_id}, name={task.name}")
         
         return jsonify({
             'code': 200,
-            'message': '任务重置成功',
+            'message': '任务重置成功' + ('（运行中的任务已停止）' if was_running else ''),
             'data': task.to_dict()
         })
         

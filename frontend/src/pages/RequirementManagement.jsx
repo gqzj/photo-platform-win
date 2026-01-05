@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Card,
   Table,
@@ -13,13 +14,14 @@ import {
   Select,
   Checkbox
 } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined } from '@ant-design/icons'
+import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, PlayCircleOutlined, EyeOutlined, RightCircleOutlined } from '@ant-design/icons'
 import api from '../services/api'
 
 const { Option } = Select
 const { TextArea } = Input
 
 const RequirementManagement = () => {
+  const navigate = useNavigate()
   const [dataSource, setDataSource] = useState([])
   const [loading, setLoading] = useState(false)
   const [pagination, setPagination] = useState({
@@ -36,6 +38,11 @@ const RequirementManagement = () => {
   const [editingRecord, setEditingRecord] = useState(null)
   const [form] = Form.useForm()
   const [features, setFeatures] = useState([]) // 特征列表
+  const [cookieOptions, setCookieOptions] = useState([]) // Cookie账号列表
+  const [progressModalVisible, setProgressModalVisible] = useState(false)
+  const [currentRequirementId, setCurrentRequirementId] = useState(null)
+  const [progressData, setProgressData] = useState(null)
+  const [progressLoading, setProgressLoading] = useState(false)
 
   // 筛选特征选项（与数据清洗任务保持一致）
   const filterFeatureOptions = [
@@ -61,7 +68,32 @@ const RequirementManagement = () => {
 
   useEffect(() => {
     fetchFeatures()
+    fetchCookies('xiaohongshu') // 默认加载小红书平台的账号
   }, [])
+
+  // 获取Cookie列表（根据平台筛选）
+  const fetchCookies = async (platform) => {
+    if (!platform) {
+      setCookieOptions([])
+      return
+    }
+    try {
+      const response = await api.get('/crawler/cookies', {
+        params: { page: 1, page_size: 1000, platform, status: 'active' }
+      })
+      if (response.code === 200) {
+        const cookies = response.data.list || []
+        setCookieOptions(cookies.map(cookie => ({
+          value: cookie.id,
+          label: cookie.platform_account || `Cookie #${cookie.id}`,
+          cookie: cookie
+        })))
+      }
+    } catch (error) {
+      console.error('获取Cookie列表失败:', error)
+      setCookieOptions([])
+    }
+  }
 
   // 获取数据
   const fetchData = async (page = 1, pageSize = 10) => {
@@ -104,6 +136,7 @@ const RequirementManagement = () => {
         name: record.name,
         requester: record.requester,
         keywords: record.keywords || [],
+        cookie_id: record.cookie_id,
         cleaning_features: record.cleaning_features || [],
         tagging_features: record.tagging_features || [],
         sample_set_features: record.sample_set_features || [],
@@ -131,6 +164,7 @@ const RequirementManagement = () => {
         name: values.name,
         requester: values.requester || '',
         keywords: values.keywords || [],
+        cookie_id: values.cookie_id || null,
         cleaning_features: values.cleaning_features || [],
         tagging_features: values.tagging_features || [],
         sample_set_features: values.sample_set_features || [],
@@ -179,6 +213,63 @@ const RequirementManagement = () => {
       }
     } catch (error) {
       message.error('删除失败：' + (error.message || '未知错误'))
+    }
+  }
+
+  // 启动需求
+  const handleStart = async (record) => {
+    try {
+      const response = await api.post(`/requirements/${record.id}/start`)
+      if (response.code === 200) {
+        message.success('需求启动成功')
+        fetchData(pagination.current, pagination.pageSize)
+      } else {
+        message.error(response.message || '启动失败')
+      }
+    } catch (error) {
+      message.error('启动失败：' + (error.response?.data?.message || error.message))
+      console.error('启动错误:', error)
+    }
+  }
+
+  // 查看进度
+  const handleViewProgress = async (record) => {
+    setCurrentRequirementId(record.id)
+    setProgressModalVisible(true)
+    await fetchProgress(record.id)
+  }
+
+  // 获取进度
+  const fetchProgress = async (requirementId) => {
+    setProgressLoading(true)
+    try {
+      const response = await api.get(`/requirements/${requirementId}/progress`)
+      if (response.code === 200) {
+        setProgressData(response.data)
+      } else {
+        message.error(response.message || '获取进度失败')
+      }
+    } catch (error) {
+      message.error('获取进度失败：' + (error.response?.data?.message || error.message))
+    } finally {
+      setProgressLoading(false)
+    }
+  }
+
+  // 执行下一个任务
+  const handleExecuteNext = async () => {
+    if (!currentRequirementId) return
+    try {
+      const response = await api.post(`/requirements/${currentRequirementId}/execute-next`)
+      if (response.code === 200) {
+        message.success(response.message || '任务已启动')
+        await fetchProgress(currentRequirementId)
+        fetchData(pagination.current, pagination.pageSize)
+      } else {
+        message.error(response.message || '执行失败')
+      }
+    } catch (error) {
+      message.error('执行失败：' + (error.response?.data?.message || error.message))
     }
   }
 
@@ -255,29 +346,53 @@ const RequirementManagement = () => {
       fixed: 'right',
       render: (_, record) => (
         <Space>
-          <Button
-            type="link"
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => handleOpenModal(record)}
-          >
-            编辑
-          </Button>
-          <Popconfirm
-            title="确定要删除这条记录吗？"
-            onConfirm={() => handleDelete(record.id)}
-            okText="确定"
-            cancelText="取消"
-          >
+          {record.status === 'pending' && (
             <Button
               type="link"
               size="small"
-              danger
-              icon={<DeleteOutlined />}
+              icon={<PlayCircleOutlined />}
+              onClick={() => handleStart(record)}
             >
-              删除
+              启动
             </Button>
-          </Popconfirm>
+          )}
+          {(record.status === 'active' || record.status === 'completed') && (
+            <Button
+              type="link"
+              size="small"
+              icon={<EyeOutlined />}
+              onClick={() => navigate(`/requirement/progress/${record.id}`)}
+            >
+              进度
+            </Button>
+          )}
+          {record.status === 'pending' && (
+            <Button
+              type="link"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => handleOpenModal(record)}
+            >
+              编辑
+            </Button>
+          )}
+          {record.status === 'pending' && (
+            <Popconfirm
+              title="确定要删除这条记录吗？"
+              onConfirm={() => handleDelete(record.id)}
+              okText="确定"
+              cancelText="取消"
+            >
+              <Button
+                type="link"
+                size="small"
+                danger
+                icon={<DeleteOutlined />}
+              >
+                删除
+              </Button>
+            </Popconfirm>
+          )}
         </Space>
       )
     }
@@ -491,6 +606,27 @@ const RequirementManagement = () => {
           </Form.Item>
 
           <Form.Item
+            name="cookie_id"
+            label="抓取账号"
+            tooltip="选择用于抓取的账号Cookie，如果不选择则使用该平台默认的active状态Cookie"
+          >
+            <Select 
+              placeholder="请选择账号（可选）"
+              allowClear
+              showSearch
+              filterOption={(input, option) =>
+                (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+              }
+            >
+              {cookieOptions.map(option => (
+                <Option key={option.value} value={option.value}>
+                  {option.label}
+                </Option>
+              ))}
+            </Select>
+          </Form.Item>
+
+          <Form.Item
             name="cleaning_features"
             label="清洗任务的筛选特征"
             tooltip="选择需要筛选的特征条件"
@@ -501,6 +637,49 @@ const RequirementManagement = () => {
           <Form.Item
             name="tagging_features"
             label="需要打标的特征"
+            extra={
+              <Button
+                type="link"
+                size="small"
+                onClick={() => {
+                  // 全选所有特征
+                  const allFeatureIds = features.map(f => f.id)
+                  form.setFieldsValue({ tagging_features: allFeatureIds })
+                  
+                  // 自动添加到样本集的特征范围
+                  const newSampleSetFeatures = allFeatureIds.map(featureId => {
+                    const feature = features.find(f => f.id === featureId)
+                    let valueRange = []
+                    
+                    // 如果特征有预定义值，默认全部勾选
+                    if (feature && feature.values_json) {
+                      try {
+                        const values = typeof feature.values_json === 'string'
+                          ? JSON.parse(feature.values_json)
+                          : feature.values_json
+                        if (Array.isArray(values) && values.length > 0) {
+                          valueRange = values // 默认勾选所有特征值
+                        }
+                      } catch (e) {
+                        console.error('解析特征值失败:', e)
+                      }
+                    }
+                    
+                    return {
+                      feature_id: featureId,
+                      value_range: valueRange
+                    }
+                  })
+                  
+                  form.setFieldsValue({
+                    sample_set_features: newSampleSetFeatures
+                  })
+                }}
+                style={{ padding: 0, height: 'auto' }}
+              >
+                全选
+              </Button>
+            }
           >
             <Select
               mode="multiple"
@@ -545,6 +724,11 @@ const RequirementManagement = () => {
                   form.setFieldsValue({
                     sample_set_features: [...currentSampleSetFeatures, ...newSampleSetFeatures]
                   })
+                } else {
+                  // 如果清空了选择，也清空样本集特征
+                  form.setFieldsValue({
+                    sample_set_features: []
+                  })
                 }
               }}
             >
@@ -581,6 +765,100 @@ const RequirementManagement = () => {
             />
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* 进度查看模态框 */}
+      <Modal
+        title="需求进度"
+        open={progressModalVisible}
+        onCancel={() => {
+          setProgressModalVisible(false)
+          setProgressData(null)
+          setCurrentRequirementId(null)
+        }}
+        width={800}
+        footer={[
+          progressData?.can_execute_next && (
+            <Button
+              key="execute"
+              type="primary"
+              icon={<RightCircleOutlined />}
+              onClick={handleExecuteNext}
+            >
+              执行下一个任务
+            </Button>
+          ),
+          <Button key="close" onClick={() => {
+            setProgressModalVisible(false)
+            setProgressData(null)
+            setCurrentRequirementId(null)
+          }}>
+            关闭
+          </Button>
+        ]}
+      >
+        {progressLoading ? (
+          <div style={{ textAlign: 'center', padding: '40px' }}>加载中...</div>
+        ) : progressData ? (
+          <div>
+            <div style={{ marginBottom: 20 }}>
+              <Space>
+                <span>总任务数：{progressData.total_tasks}</span>
+                <span>已完成：{progressData.completed_tasks}</span>
+                <span>当前任务：{progressData.current_task_order || '无'}</span>
+              </Space>
+            </div>
+            <div>
+              {progressData.tasks && progressData.tasks.map((task, index) => {
+                const taskTypeMap = {
+                  'crawler': '抓取任务',
+                  'cleaning': '清洗任务',
+                  'tagging': '打标任务',
+                  'sample_set': '样本集'
+                }
+                const statusMap = {
+                  'pending': { color: 'default', text: '待执行' },
+                  'running': { color: 'processing', text: '执行中' },
+                  'completed': { color: 'success', text: '已完成' },
+                  'failed': { color: 'error', text: '失败' }
+                }
+                const statusInfo = statusMap[task.status] || { color: 'default', text: task.status }
+                
+                return (
+                  <div
+                    key={task.id}
+                    style={{
+                      padding: '12px',
+                      marginBottom: '8px',
+                      border: '1px solid #f0f0f0',
+                      borderRadius: '4px',
+                      backgroundColor: task.order === progressData.current_task_order ? '#e6f7ff' : '#fff'
+                    }}
+                  >
+                    <Space>
+                      <span style={{ fontWeight: 'bold' }}>步骤 {task.order}:</span>
+                      <span>{taskTypeMap[task.task_type] || task.task_type}</span>
+                      <Tag color={statusInfo.color}>{statusInfo.text}</Tag>
+                      {task.name && <span style={{ color: '#999' }}>{task.name}</span>}
+                    </Space>
+                    {task.started_at && (
+                      <div style={{ marginTop: 4, fontSize: 12, color: '#999' }}>
+                        开始时间: {task.started_at}
+                      </div>
+                    )}
+                    {task.finished_at && (
+                      <div style={{ marginTop: 4, fontSize: 12, color: '#999' }}>
+                        完成时间: {task.finished_at}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        ) : (
+          <div style={{ textAlign: 'center', padding: '40px' }}>暂无进度数据</div>
+        )}
       </Modal>
     </div>
   )

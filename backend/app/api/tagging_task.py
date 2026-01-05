@@ -203,6 +203,15 @@ def execute_task(task_id):
         # 检查任务是否存在
         task = TaggingTask.query.get_or_404(task_id)
         
+        # 检查是否有需求关联，如果有，检查前置任务是否完成
+        try:
+            from app.api.requirement import check_prerequisite_tasks
+            is_ok, error_msg = check_prerequisite_tasks('tagging', task_id)
+            if not is_ok:
+                return jsonify({'code': 400, 'message': error_msg}), 400
+        except Exception as e:
+            current_app.logger.warning(f"检查前置任务失败: {e}")
+        
         # 检查任务状态
         if task.status == 'running':
             return jsonify({
@@ -215,6 +224,11 @@ def execute_task(task_id):
                 'code': 400,
                 'message': '任务已完成，如需重新执行请先重置任务状态'
             }), 400
+        
+        # 如果任务是被中断的，允许重启（从上次中断的位置继续）
+        if task.status == 'interrupted':
+            # 重启中断的任务，保持已处理的进度
+            pass
         
         # 导入服务（避免循环导入）
         from app.services.batch_tagging_service import BatchTaggingService
@@ -253,6 +267,41 @@ def execute_task(task_id):
         current_app.logger.error(f"执行打标任务失败: {error_detail}")
         return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
 
+@bp.route('/<int:task_id>/interrupt', methods=['POST'])
+def interrupt_task(task_id):
+    """中断打标任务"""
+    try:
+        # 检查任务是否存在
+        task = TaggingTask.query.get_or_404(task_id)
+        
+        # 只有running状态的任务可以中断
+        if task.status != 'running':
+            return jsonify({
+                'code': 400,
+                'message': f'任务状态为 {task.status}，无法中断'
+            }), 400
+        
+        # 更新任务状态为中断
+        task.status = 'interrupted'
+        task.finished_at = datetime.now()
+        task.last_error = '任务被用户中断'
+        
+        db.session.commit()
+        
+        current_app.logger.info(f"打标任务已中断: task_id={task_id}, name={task.name}, processed_count={task.processed_count}")
+        
+        return jsonify({
+            'code': 200,
+            'message': '任务已中断',
+            'data': task.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        error_detail = traceback.format_exc()
+        current_app.logger.error(f"中断打标任务失败: {error_detail}")
+        return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
+
 @bp.route('/<int:task_id>/reset', methods=['POST'])
 def reset_task(task_id):
     """重置打标任务"""
@@ -260,7 +309,7 @@ def reset_task(task_id):
         # 检查任务是否存在
         task = TaggingTask.query.get_or_404(task_id)
         
-        # 检查任务状态，只有completed或failed状态的任务才能重置
+        # 检查任务状态，只有completed、failed或interrupted状态的任务才能重置
         if task.status == 'running':
             return jsonify({
                 'code': 400,
@@ -289,5 +338,52 @@ def reset_task(task_id):
         db.session.rollback()
         error_detail = traceback.format_exc()
         current_app.logger.error(f"重置打标任务失败: {error_detail}")
+        return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
+
+@bp.route('/<int:task_id>/copy', methods=['POST'])
+def copy_task(task_id):
+    """复制打标任务"""
+    try:
+        # 获取源任务
+        source_task = TaggingTask.query.get_or_404(task_id)
+        
+        # 生成新任务名称（添加"副本"后缀）
+        new_name = f"{source_task.name}_副本"
+        # 如果名称已存在，添加序号
+        counter = 1
+        while TaggingTask.query.filter_by(name=new_name).first():
+            counter += 1
+            new_name = f"{source_task.name}_副本{counter}"
+        
+        # 创建新任务（复制所有配置，但重置状态和进度）
+        new_task = TaggingTask(
+            name=new_name,
+            description=source_task.description,
+            tagging_features=source_task.tagging_features,  # 直接复制JSON字符串
+            filter_keywords=source_task.filter_keywords,  # 直接复制JSON字符串
+            status='pending',
+            total_count=0,
+            processed_count=0,
+            note=source_task.note,
+            last_error=None,
+            started_at=None,
+            finished_at=None
+        )
+        
+        db.session.add(new_task)
+        db.session.commit()
+        
+        current_app.logger.info(f"打标任务已复制: source_task_id={task_id}, new_task_id={new_task.id}, name={new_task.name}")
+        
+        return jsonify({
+            'code': 200,
+            'message': '任务复制成功',
+            'data': new_task.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        error_detail = traceback.format_exc()
+        current_app.logger.error(f"复制打标任务失败: {error_detail}")
         return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
 

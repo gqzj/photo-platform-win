@@ -166,13 +166,6 @@ class DataCleaningService:
                     'message': f'任务不存在: {task_id}'
                 }
             
-            # 更新任务状态
-            task.status = 'running'
-            task.started_at = datetime.now()
-            task.processed_count = 0
-            task.last_error = None
-            db.session.commit()
-            
             # 获取筛选条件
             filter_features = self._get_filter_features(task)
             filter_keywords = self._get_filter_keywords(task)
@@ -203,6 +196,14 @@ class DataCleaningService:
             
             logger.info(f"找到 {total_count} 张符合条件的图片")
             
+            # 更新任务状态和总数量
+            task.status = 'running'
+            task.started_at = datetime.now()
+            task.processed_count = 0
+            task.total_count = total_count
+            task.last_error = None
+            db.session.commit()
+            
             # 统计信息
             stats = {
                 'total': total_count,
@@ -215,6 +216,13 @@ class DataCleaningService:
             # 处理每张图片
             for idx, image in enumerate(images):
                 try:
+                    # 检查任务状态，如果被重置为pending，停止执行
+                    db.session.refresh(task)
+                    if task.status != 'running':
+                        logger.info(f"任务状态已变为 {task.status}，停止执行: task_id={task_id}")
+                        stats['skipped'] += total_count - idx
+                        break
+                    
                     # 更新处理计数
                     task.processed_count = idx + 1
                     db.session.commit()
@@ -275,13 +283,29 @@ class DataCleaningService:
                     stats['skipped'] += 1
                     continue
             
-            # 更新任务状态
-            task.status = 'completed'
-            task.finished_at = datetime.now()
-            task.processed_count = stats['processed']
-            if stats['errors']:
-                task.last_error = f"部分图片处理失败: {len(stats['errors'])} 个错误"
-            db.session.commit()
+            # 更新任务状态（如果任务没有被重置）
+            db.session.refresh(task)
+            if task.status == 'running':
+                task.status = 'completed'
+                task.finished_at = datetime.now()
+                task.processed_count = stats['processed']
+                if stats['errors']:
+                    task.last_error = f"部分图片处理失败: {len(stats['errors'])} 个错误"
+                db.session.commit()
+            else:
+                logger.info(f"任务状态已变为 {task.status}，跳过完成状态更新: task_id={task_id}")
+            
+            # 刷新任务对象以确保状态已保存
+            db.session.refresh(task)
+            
+            # 更新需求关联任务状态
+            try:
+                from app.api.requirement import check_and_update_requirement_task_status
+                logger.info(f"开始更新需求任务状态: cleaning, task_id={task_id}, task.status={task.status}")
+                check_and_update_requirement_task_status('cleaning', task_id)
+                logger.info(f"需求任务状态更新完成: cleaning, task_id={task_id}")
+            except Exception as e:
+                logger.error(f"更新需求任务状态失败: {e}", exc_info=True)
             
             logger.info(f"清洗任务完成 {task_id}: {stats}")
             
@@ -292,14 +316,31 @@ class DataCleaningService:
             }
             
         except Exception as e:
-            # 更新任务状态为失败
+            # 更新任务状态为失败（如果任务没有被重置）
             try:
                 task = DataCleaningTask.query.get(task_id)
                 if task:
-                    task.status = 'failed'
-                    task.last_error = str(e)
-                    task.finished_at = datetime.now()
-                    db.session.commit()
+                    db.session.refresh(task)
+                    # 只有在任务仍然是running状态时才标记为失败
+                    if task.status == 'running':
+                        task.status = 'failed'
+                        task.last_error = str(e)
+                        task.finished_at = datetime.now()
+                        db.session.commit()
+                        
+                        # 刷新任务对象以确保状态已保存
+                        db.session.refresh(task)
+                        
+                        # 更新需求关联任务状态
+                        try:
+                            from app.api.requirement import check_and_update_requirement_task_status
+                            logger.info(f"开始更新需求任务状态（失败）: cleaning, task_id={task_id}, task.status={task.status}")
+                            check_and_update_requirement_task_status('cleaning', task_id)
+                            logger.info(f"需求任务状态更新完成（失败）: cleaning, task_id={task_id}")
+                        except Exception as update_error:
+                            logger.error(f"更新需求任务状态失败: {update_error}", exc_info=True)
+                    else:
+                        logger.info(f"任务状态已变为 {task.status}，跳过失败状态更新: task_id={task_id}")
             except:
                 pass
             

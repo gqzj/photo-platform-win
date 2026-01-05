@@ -7,6 +7,7 @@ from flask import Blueprint, request, jsonify, current_app
 from app.database import db
 from app.models.feature import Feature
 from app.models.image_tagging_result import ImageTaggingResult
+from app.models.image_tagging_result_detail import ImageTaggingResultDetail
 from app.models.image import Image
 from sqlalchemy import func, distinct
 import traceback
@@ -23,42 +24,37 @@ def get_feature_statistics():
         # 统计总体信息
         total_features = len(features)
         
-        # 统计有打标结果的图片数
-        total_tagged_images = db.session.query(
-            func.count(distinct(ImageTaggingResult.image_id))
-        ).scalar() or 0
+        # 统计有打标结果的图片数（从汇总表）
+        total_tagged_images = ImageTaggingResult.query.count()
         
-        # 统计总打标记录数
-        total_tagging_records = ImageTaggingResult.query.count()
+        # 统计总打标记录数（从明细表）
+        total_tagging_records = ImageTaggingResultDetail.query.count()
         
         # 统计每个特征的信息
         feature_statistics = []
         
         for feature in features:
-            # 获取该特征的所有打标结果
-            tagging_results = ImageTaggingResult.query.filter_by(
-                feature_id=feature.id
-            ).all()
-            
-            # 统计该特征的图片数（去重）
+            # 统计该特征的图片数（从明细表查询）
             tagged_image_count = db.session.query(
-                func.count(distinct(ImageTaggingResult.image_id))
+                func.count(distinct(ImageTaggingResultDetail.image_id))
             ).filter_by(
                 feature_id=feature.id
             ).scalar() or 0
             
-            # 统计该特征的不同值数量
+            # 统计该特征的不同值数量（从明细表查询）
             distinct_values = db.session.query(
-                func.count(distinct(ImageTaggingResult.tagging_value))
+                func.count(distinct(ImageTaggingResultDetail.tagging_value))
             ).filter_by(
                 feature_id=feature.id
             ).filter(
-                ImageTaggingResult.tagging_value.isnot(None),
-                ImageTaggingResult.tagging_value != ''
+                ImageTaggingResultDetail.tagging_value.isnot(None),
+                ImageTaggingResultDetail.tagging_value != ''
             ).scalar() or 0
             
-            # 统计该特征的总记录数
-            total_records = len(tagging_results)
+            # 统计该特征的总记录数（从明细表）
+            total_records = ImageTaggingResultDetail.query.filter_by(
+                feature_id=feature.id
+            ).count()
             
             feature_statistics.append({
                 'feature_id': feature.id,
@@ -100,38 +96,22 @@ def get_feature_value_distribution(feature_id):
                 'message': '特征不存在'
             }), 404
         
-        # 统计每个特征值的图片数量
-        # 使用子查询获取每个图片每个特征的最新打标结果
-        from sqlalchemy.orm import aliased
-        
-        subquery = db.session.query(
-            ImageTaggingResult.image_id,
-            func.max(ImageTaggingResult.updated_at).label('max_updated_at')
+        # 统计每个特征值的图片数量（从明细表直接查询）
+        value_distribution = db.session.query(
+            ImageTaggingResultDetail.tagging_value,
+            func.count(ImageTaggingResultDetail.image_id).label('image_count')
         ).filter_by(
             feature_id=feature_id
-        ).group_by(
-            ImageTaggingResult.image_id
-        ).subquery()
-        
-        # 获取最新的打标结果
-        latest_results = db.session.query(
-            ImageTaggingResult.tagging_value,
-            func.count(ImageTaggingResult.image_id).label('image_count')
-        ).join(
-            subquery,
-            db.and_(
-                ImageTaggingResult.image_id == subquery.c.image_id,
-                ImageTaggingResult.feature_id == feature_id,
-                ImageTaggingResult.updated_at == subquery.c.max_updated_at
-            )
         ).filter(
-            ImageTaggingResult.tagging_value.isnot(None),
-            ImageTaggingResult.tagging_value != ''
+            ImageTaggingResultDetail.tagging_value.isnot(None),
+            ImageTaggingResultDetail.tagging_value != ''
         ).group_by(
-            ImageTaggingResult.tagging_value
+            ImageTaggingResultDetail.tagging_value
         ).order_by(
-            func.count(ImageTaggingResult.image_id).desc()
+            func.count(ImageTaggingResultDetail.image_id).desc()
         ).all()
+        
+        latest_results = value_distribution
         
         # 转换为列表格式
         distribution = []

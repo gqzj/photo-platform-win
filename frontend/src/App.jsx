@@ -17,7 +17,12 @@ import SampleSetManagement from './pages/SampleSetManagement'
 import SampleSetView from './pages/SampleSetView'
 import KeywordView from './pages/KeywordView'
 import FeatureAnalysis from './pages/FeatureAnalysis'
+import FeatureGroupManagement from './pages/FeatureGroupManagement'
 import RequirementManagement from './pages/RequirementManagement'
+import RequirementProgress from './pages/RequirementProgress'
+import StyleManagement from './pages/StyleManagement'
+import StyleImageView from './pages/StyleImageView'
+import StyleMatch from './pages/StyleMatch'
 
 function App() {
   return (
@@ -36,12 +41,17 @@ function App() {
           <Route path="/tagging/data-cleaning" element={<DataCleaningTask />} />
           <Route path="/tagging/tagging-task" element={<TaggingTask />} />
           <Route path="/tagging/feature-analysis" element={<FeatureAnalysis />} />
+          <Route path="/tagging/feature-groups" element={<FeatureGroupManagement />} />
           <Route path="/tagging/recycle" element={<ImageRecycle />} />
           <Route path="/tools/cleaning-test" element={<ImageCleaningTest />} />
           <Route path="/tools/tagging-test" element={<ImageTaggingTest />} />
           <Route path="/sample-set/management" element={<SampleSetManagement />} />
           <Route path="/sample-set/view" element={<SampleSetView />} />
           <Route path="/requirement/management" element={<RequirementManagement />} />
+          <Route path="/requirement/progress/:id" element={<RequirementProgress />} />
+          <Route path="/style/management" element={<StyleManagement />} />
+          <Route path="/style/view" element={<StyleImageView />} />
+          <Route path="/style/match" element={<StyleMatch />} />
           <Route path="/settings/directory" element={<SettingsDirectory />} />
         </Routes>
       </MainLayout>

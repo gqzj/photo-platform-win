@@ -11,6 +11,7 @@ class DataCleaningTask(db.Model):
     filter_keywords = db.Column(db.Text, comment='筛选范围关键字JSON，关键字列表')
     status = db.Column(db.String(50), nullable=False, default='pending', comment='状态：pending, running, paused, completed, failed')
     processed_count = db.Column(db.Integer, nullable=False, default=0, comment='任务处理总数')
+    total_count = db.Column(db.Integer, nullable=False, default=0, comment='需要清洗的图片总数')
     note = db.Column(db.Text, comment='备注')
     last_error = db.Column(db.Text, comment='最后错误信息')
     started_at = db.Column(db.DateTime, comment='开始时间')
@@ -27,6 +28,7 @@ class DataCleaningTask(db.Model):
             'filter_keywords': json.loads(self.filter_keywords) if self.filter_keywords else [],
             'status': self.status,
             'processed_count': self.processed_count,
+            'total_count': self.total_count,
             'note': self.note or '',
             'last_error': self.last_error or '',
             'started_at': self.started_at.strftime('%Y-%m-%d %H:%M:%S') if self.started_at else None,

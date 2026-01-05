@@ -15,7 +15,7 @@ import {
   InputNumber,
   Checkbox
 } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, CalculatorOutlined, InboxOutlined, DownloadOutlined, ReloadOutlined, EyeOutlined } from '@ant-design/icons'
+import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, CalculatorOutlined, InboxOutlined, DownloadOutlined, ReloadOutlined, EyeOutlined, CopyOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import api from '../services/api'
 
@@ -40,6 +40,7 @@ const SampleSetManagement = () => {
   const [form] = Form.useForm()
   const [selectedRowKeys, setSelectedRowKeys] = useState([])
   const [features, setFeatures] = useState([]) // 特征列表
+  const [keywords, setKeywords] = useState([]) // 关键字列表
 
   // 获取特征列表
   const fetchFeatures = async () => {
@@ -53,8 +54,22 @@ const SampleSetManagement = () => {
     }
   }
 
+  // 获取关键字列表
+  const fetchKeywords = async () => {
+    try {
+      const response = await api.get('/keyword-statistics', { params: { page: 1, page_size: 1000 } })
+      if (response.code === 200) {
+        const keywordList = (response.data.list || []).map(item => item.keyword).filter(k => k)
+        setKeywords(keywordList)
+      }
+    } catch (error) {
+      console.error('获取关键字列表失败:', error)
+    }
+  }
+
   useEffect(() => {
     fetchFeatures()
+    fetchKeywords()
   }, [])
 
   // 获取数据
@@ -122,6 +137,7 @@ const SampleSetManagement = () => {
       form.setFieldsValue({
         name: record.name,
         description: record.description,
+        keywords: record.keywords || [],
         status: record.status,
         features: featuresData
       })
@@ -129,6 +145,7 @@ const SampleSetManagement = () => {
       form.resetFields()
       form.setFieldsValue({
         status: 'active',
+        keywords: [],
         features: []
       })
     }
@@ -164,6 +181,7 @@ const SampleSetManagement = () => {
       const data = {
         name: values.name,
         description: values.description,
+        keywords: values.keywords || [],
         status: values.status,
         features: featuresData
       }
@@ -196,6 +214,25 @@ const SampleSetManagement = () => {
         message.error('操作失败：' + (error.response?.data?.message || error.message))
       }
       console.error('提交错误:', error)
+    }
+  }
+
+  // 复制样本集
+  const handleCopy = async (record) => {
+    try {
+      const response = await api.post(`/sample-sets/${record.id}/copy`)
+      if (response.code === 200) {
+        message.success('样本集复制成功')
+        // 自动打开编辑弹窗，让用户修改复制的样本集
+        const copiedRecord = response.data
+        handleOpenModal(copiedRecord)
+        fetchData(pagination.current, pagination.pageSize)
+      } else {
+        message.error(response.message || '复制样本集失败')
+      }
+    } catch (error) {
+      message.error('复制样本集失败：' + (error.response?.data?.message || error.message))
+      console.error('复制样本集错误:', error)
     }
   }
 
@@ -409,81 +446,86 @@ const SampleSetManagement = () => {
     {
       title: '操作',
       key: 'action',
-      width: 200,
+      width: 300,
       fixed: 'right',
       render: (_, record) => {
         return (
-          <Space direction="vertical" size="small" style={{ width: '100%' }}>
-            <Space size="small">
+          <Space size="small" wrap style={{ width: '100%', justifyContent: 'flex-start' }}>
+            <Button
+              type="link"
+              size="small"
+              icon={<CalculatorOutlined />}
+              onClick={() => handleCalculate(record)}
+            >
+              计算数据
+            </Button>
+            <Button
+              type="link"
+              size="small"
+              icon={<InboxOutlined />}
+              onClick={() => handlePackage(record)}
+              disabled={record.package_status === 'packing'}
+            >
+              打包
+            </Button>
+            {record.package_status === 'packed' && (
               <Button
                 type="link"
                 size="small"
-                icon={<CalculatorOutlined />}
-                onClick={() => handleCalculate(record)}
+                icon={<DownloadOutlined />}
+                onClick={() => handleDownload(record)}
               >
-                计算数据
+                下载
               </Button>
+            )}
+            <Button
+              type="link"
+              size="small"
+              icon={<EyeOutlined />}
+              onClick={() => handleView(record)}
+            >
+              查看
+            </Button>
+            <Button
+              type="link"
+              size="small"
+              icon={<ReloadOutlined />}
+              onClick={() => handleRefresh(record)}
+            >
+              刷新
+            </Button>
+            <Button
+              type="link"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => handleOpenModal(record)}
+            >
+              编辑
+            </Button>
+            <Button
+              type="link"
+              size="small"
+              icon={<CopyOutlined />}
+              onClick={() => handleCopy(record)}
+              title="复制样本集"
+            >
+              复制
+            </Button>
+            <Popconfirm
+              title="确定要删除这个样本集吗？"
+              onConfirm={() => handleDelete(record.id)}
+              okText="确定"
+              cancelText="取消"
+            >
               <Button
                 type="link"
                 size="small"
-                icon={<InboxOutlined />}
-                onClick={() => handlePackage(record)}
-                disabled={record.package_status === 'packing'}
+                danger
+                icon={<DeleteOutlined />}
               >
-                打包
+                删除
               </Button>
-              {record.package_status === 'packed' && (
-                <Button
-                  type="link"
-                  size="small"
-                  icon={<DownloadOutlined />}
-                  onClick={() => handleDownload(record)}
-                >
-                  下载
-                </Button>
-              )}
-            </Space>
-            <Space size="small">
-              <Button
-                type="link"
-                size="small"
-                icon={<EyeOutlined />}
-                onClick={() => handleView(record)}
-              >
-                查看
-              </Button>
-              <Button
-                type="link"
-                size="small"
-                icon={<ReloadOutlined />}
-                onClick={() => handleRefresh(record)}
-              >
-                刷新
-              </Button>
-              <Button
-                type="link"
-                size="small"
-                icon={<EditOutlined />}
-                onClick={() => handleOpenModal(record)}
-              >
-                编辑
-              </Button>
-              <Popconfirm
-                title="确定要删除这个样本集吗？"
-                onConfirm={() => handleDelete(record.id)}
-                okText="确定"
-                cancelText="取消"
-              >
-                <Button
-                  type="link"
-                  size="small"
-                  danger
-                  icon={<DeleteOutlined />}
-                >
-                  删除
-                </Button>
-              </Popconfirm>
-            </Space>
+            </Popconfirm>
           </Space>
         )
       }
@@ -587,6 +629,24 @@ const SampleSetManagement = () => {
             label="描述"
           >
             <TextArea rows={3} placeholder="请输入样本集描述" />
+          </Form.Item>
+
+          <Form.Item
+            name="keywords"
+            label="关键字列表"
+            tooltip="选择关键字以限定图片范围，可多选"
+          >
+            <Select
+              mode="tags"
+              placeholder="选择或输入关键字，按回车添加"
+              style={{ width: '100%' }}
+              tokenSeparators={[',']}
+              allowClear
+            >
+              {keywords.map(keyword => (
+                <Option key={keyword} value={keyword}>{keyword}</Option>
+              ))}
+            </Select>
           </Form.Item>
 
           <Form.Item

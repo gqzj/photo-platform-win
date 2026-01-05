@@ -9,6 +9,7 @@ class SampleSet(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True, comment='主键ID')
     name = db.Column(db.String(200), nullable=False, comment='样本集名称')
     description = db.Column(db.Text, comment='样本集描述')
+    keywords_json = db.Column(db.Text, comment='关键字列表JSON，用于限定图片范围')
     status = db.Column(db.String(50), nullable=False, default='active', comment='状态：active, inactive')
     image_count = db.Column(db.Integer, nullable=False, default=0, comment='图片数量')
     package_status = db.Column(db.String(50), nullable=False, default='unpacked', comment='打包状态：unpacked(未打包), packing(打包中), packed(已打包), failed(打包失败)')
@@ -28,10 +29,21 @@ class SampleSet(db.Model):
         for feature in self.features.all():
             features_list.append(feature.to_dict())
         
+        keywords_list = []
+        if self.keywords_json:
+            try:
+                keywords_list = json.loads(self.keywords_json) if isinstance(self.keywords_json, str) else self.keywords_json
+                if not isinstance(keywords_list, list):
+                    keywords_list = []
+            except:
+                keywords_list = []
+        
         return {
             'id': self.id,
             'name': self.name,
             'description': self.description or '',
+            'keywords_json': self.keywords_json,
+            'keywords': keywords_list,
             'status': self.status,
             'image_count': self.image_count,
             'package_status': self.package_status,

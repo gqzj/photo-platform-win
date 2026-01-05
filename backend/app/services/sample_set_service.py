@@ -10,6 +10,7 @@ from app.database import db
 from app.models.sample_set import SampleSet, SampleSetFeature, SampleSetImage
 from app.models.image import Image
 from app.models.image_tagging_result import ImageTaggingResult
+from app.models.image_tagging_result_detail import ImageTaggingResultDetail
 
 logger = logging.getLogger(__name__)
 
@@ -99,41 +100,41 @@ class SampleSetService:
             # 获取所有特征ID
             feature_ids = [f.feature_id for f in features]
             
+            # 获取关键字列表
+            keywords = []
+            if sample_set.keywords_json:
+                try:
+                    keywords = json.loads(sample_set.keywords_json) if isinstance(sample_set.keywords_json, str) else sample_set.keywords_json
+                    if not isinstance(keywords, list):
+                        keywords = []
+                except:
+                    keywords = []
+            
             # 获取所有有打标结果的图片（只查询配置的特征）
-            # 注意：这里查询所有打标任务的结果，因为样本集可能基于多个打标任务的结果
-            # 如果一张图片有多个打标任务的结果，取最新的（按updated_at）
-            from sqlalchemy import func
-            from sqlalchemy.orm import aliased
-            
-            # 使用子查询获取每个图片每个特征的最新打标结果
-            subquery = db.session.query(
-                ImageTaggingResult.image_id,
-                ImageTaggingResult.feature_id,
-                func.max(ImageTaggingResult.updated_at).label('max_updated_at')
-            ).filter(
-                ImageTaggingResult.feature_id.in_(feature_ids)
-            ).group_by(
-                ImageTaggingResult.image_id,
-                ImageTaggingResult.feature_id
-            ).subquery()
-            
-            # 获取最新的打标结果
-            latest_results = db.session.query(ImageTaggingResult).join(
-                subquery,
-                db.and_(
-                    ImageTaggingResult.image_id == subquery.c.image_id,
-                    ImageTaggingResult.feature_id == subquery.c.feature_id,
-                    ImageTaggingResult.updated_at == subquery.c.max_updated_at
-                )
+            # 从明细表直接查询，每个图片每个特征只有一条记录（最新的）
+            tagging_details = ImageTaggingResultDetail.query.filter(
+                ImageTaggingResultDetail.feature_id.in_(feature_ids)
             ).all()
+            
+            # 如果有关键字筛选，需要先获取符合条件的图片ID
+            image_ids_filter = None
+            if keywords:
+                from sqlalchemy import or_
+                # 查询关键字匹配的图片
+                keyword_images = Image.query.filter(
+                    Image.status == 'active',
+                    or_(*[Image.keyword.like(f'%{kw}%') for kw in keywords if kw])
+                ).all()
+                image_ids_filter = set([img.id for img in keyword_images])
+                logger.info(f"关键字筛选: {keywords}, 匹配到 {len(image_ids_filter)} 张图片")
             
             # 按图片ID分组打标结果
             image_tagging_map = {}
-            for result in latest_results:
-                image_id = result.image_id
+            for detail in tagging_details:
+                image_id = detail.image_id
                 if image_id not in image_tagging_map:
                     image_tagging_map[image_id] = {}
-                image_tagging_map[image_id][result.feature_id] = result.tagging_value
+                image_tagging_map[image_id][detail.feature_id] = detail.tagging_value
             
             # 清空旧的样本集图片数据
             SampleSetImage.query.filter_by(sample_set_id=sample_set_id).delete()
@@ -144,6 +145,10 @@ class SampleSetService:
             
             # 遍历所有有打标结果的图片
             for image_id, tagging_values in image_tagging_map.items():
+                # 如果有关键字筛选，先检查图片是否在筛选范围内
+                if image_ids_filter is not None and image_id not in image_ids_filter:
+                    continue
+                
                 # 检查是否匹配所有特征条件
                 all_match = True
                 matched_feature_ids = []

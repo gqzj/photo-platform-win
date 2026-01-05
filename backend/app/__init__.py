@@ -57,7 +57,7 @@ def create_app():
     CORS(app, resources={r"/api/*": {"origins": "*"}})
     
     # 注册蓝图
-    from app.api import image_capture, image_tagging, image_statistics, crawler_cookie, crawler_task, post, settings, feature, data_cleaning_task, image_recycle, tagging_task, image_cleaning_test, image_tagging_test, sample_set, keyword_statistics, feature_analysis, requirement
+    from app.api import image_capture, image_tagging, image_statistics, crawler_cookie, crawler_task, post, settings, feature, data_cleaning_task, image_recycle, tagging_task, image_cleaning_test, image_tagging_test, sample_set, keyword_statistics, feature_analysis, requirement, feature_group, style, style_match
     
     app.register_blueprint(image_capture.bp, url_prefix='/api/images/capture')
     app.register_blueprint(image_tagging.bp, url_prefix='/api/images')
@@ -76,6 +76,9 @@ def create_app():
     app.register_blueprint(keyword_statistics.bp, url_prefix='/api/keyword-statistics')
     app.register_blueprint(feature_analysis.bp, url_prefix='/api/feature-analysis')
     app.register_blueprint(requirement.bp, url_prefix='/api/requirements')
+    app.register_blueprint(feature_group.bp, url_prefix='/api/feature-groups')
+    app.register_blueprint(style.bp, url_prefix='/api/styles')
+    app.register_blueprint(style_match.bp, url_prefix='/api/style-match')
     
     return app
 

@@ -13,7 +13,7 @@ import {
   Tag,
   Progress
 } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, PlayCircleOutlined, SyncOutlined, ReloadOutlined } from '@ant-design/icons'
+import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, PlayCircleOutlined, SyncOutlined, ReloadOutlined, PauseCircleOutlined, CopyOutlined } from '@ant-design/icons'
 import api from '../services/api'
 
 const { Option } = Select
@@ -203,6 +203,23 @@ const TaggingTask = () => {
     }
   }
 
+  // 中断任务
+  const handleInterrupt = async (record) => {
+    try {
+      const response = await api.post(`/tagging/tasks/${record.id}/interrupt`)
+      if (response.code === 200) {
+        message.success('任务已中断')
+        fetchData(pagination.current, pagination.pageSize)
+        setAutoRefresh(false)
+      } else {
+        message.error(response.message || '中断任务失败')
+      }
+    } catch (error) {
+      message.error('中断任务失败：' + (error.response?.data?.message || error.message))
+      console.error('中断任务错误:', error)
+    }
+  }
+
   // 重置任务
   const handleReset = async (record) => {
     try {
@@ -216,6 +233,26 @@ const TaggingTask = () => {
     } catch (error) {
       message.error('重置任务失败：' + (error.response?.data?.message || error.message))
       console.error('重置任务错误:', error)
+    }
+  }
+
+  // 复制任务
+  const handleCopy = async (record) => {
+    try {
+      const response = await api.post(`/tagging/tasks/${record.id}/copy`)
+      if (response.code === 200) {
+        message.success('任务复制成功')
+        fetchData(pagination.current, pagination.pageSize)
+        // 自动打开编辑弹窗，让用户修改复制的任务
+        if (response.data) {
+          handleOpenModal(response.data)
+        }
+      } else {
+        message.error(response.message || '复制任务失败')
+      }
+    } catch (error) {
+      message.error('复制任务失败：' + (error.response?.data?.message || error.message))
+      console.error('复制任务错误:', error)
     }
   }
 
@@ -332,6 +369,7 @@ const TaggingTask = () => {
           'pending': { color: 'default', text: '待处理' },
           'running': { color: 'processing', text: '运行中' },
           'paused': { color: 'warning', text: '已暂停' },
+          'interrupted': { color: 'warning', text: '已中断' },
           'completed': { color: 'success', text: '已完成' },
           'failed': { color: 'error', text: '失败' }
         }
@@ -360,8 +398,9 @@ const TaggingTask = () => {
       fixed: 'right',
       render: (_, record) => {
         const canEdit = record.status === 'pending' || record.status === 'failed'
-        const canExecute = record.status === 'pending' || record.status === 'failed'
-        const canReset = record.status === 'completed' || record.status === 'failed'
+        const canExecute = record.status === 'pending' || record.status === 'failed' || record.status === 'interrupted'
+        const canInterrupt = record.status === 'running'
+        const canReset = record.status === 'completed' || record.status === 'failed' || record.status === 'interrupted'
         return (
           <Space>
             {canExecute && (
@@ -371,8 +410,25 @@ const TaggingTask = () => {
                 icon={<PlayCircleOutlined />}
                 onClick={() => handleExecute(record)}
               >
-                启动
+                {record.status === 'interrupted' ? '重启' : '启动'}
               </Button>
+            )}
+            {canInterrupt && (
+              <Popconfirm
+                title="确定要中断这个任务吗？中断后可以从当前位置继续执行。"
+                onConfirm={() => handleInterrupt(record)}
+                okText="确定"
+                cancelText="取消"
+              >
+                <Button
+                  type="link"
+                  size="small"
+                  danger
+                  icon={<PauseCircleOutlined />}
+                >
+                  中断
+                </Button>
+              </Popconfirm>
             )}
             {canReset && (
               <Popconfirm
@@ -400,7 +456,16 @@ const TaggingTask = () => {
                 编辑
               </Button>
             )}
-            {(record.status === 'pending' || record.status === 'failed' || record.status === 'completed') && (
+            <Button
+              type="link"
+              size="small"
+              icon={<CopyOutlined />}
+              onClick={() => handleCopy(record)}
+              title="复制任务"
+            >
+              复制
+            </Button>
+            {(record.status === 'pending' || record.status === 'failed' || record.status === 'completed' || record.status === 'interrupted') && (
               <Popconfirm
                 title="确定要删除这个任务吗？"
                 onConfirm={() => handleDelete(record.id)}
@@ -454,6 +519,7 @@ const TaggingTask = () => {
               <Option value="pending">待处理</Option>
               <Option value="running">运行中</Option>
               <Option value="paused">已暂停</Option>
+              <Option value="interrupted">已中断</Option>
               <Option value="completed">已完成</Option>
               <Option value="failed">失败</Option>
             </Select>

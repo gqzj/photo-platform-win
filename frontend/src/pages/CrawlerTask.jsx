@@ -12,7 +12,7 @@ import {
   Popconfirm,
   Tag
 } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons'
+import { PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined, ReloadOutlined, RedoOutlined } from '@ant-design/icons'
 import api from '../services/api'
 
 const { Option } = Select
@@ -205,6 +205,21 @@ const CrawlerTask = () => {
     }
   }
 
+  // 重置任务
+  const handleReset = async (record) => {
+    try {
+      const response = await api.post(`/crawler/tasks/${record.id}/reset`)
+      if (response.code === 200) {
+        message.success('任务重置成功')
+        fetchData(pagination.current, pagination.pageSize)
+      } else {
+        message.error(response.message || '重置失败')
+      }
+    } catch (error) {
+      message.error('重置失败：' + (error.response?.data?.message || error.message || '未知错误'))
+    }
+  }
+
   // 删除
   const handleDelete = async (id) => {
     try {
@@ -383,19 +398,21 @@ const CrawlerTask = () => {
               </Button>
             )}
             {record.task_type === 'keyword' && record.status === 'running' && (
-              <Button
-                type="link"
-                size="small"
-                icon={<PlayCircleOutlined />}
-                onClick={() => {
-                  console.log('任务正在运行中，尝试重新运行:', record)
-                  handleCrawl(record)
-                }}
-                disabled
-                title="任务正在运行中"
+              <Popconfirm
+                title="确定要重置这个运行中的任务吗？重置后任务将停止并可以重新运行"
+                onConfirm={() => handleReset(record)}
+                okText="确定"
+                cancelText="取消"
               >
-                运行中
-              </Button>
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<RedoOutlined />}
+                  danger
+                >
+                  重置
+                </Button>
+              </Popconfirm>
             )}
           <Button
             type="link"

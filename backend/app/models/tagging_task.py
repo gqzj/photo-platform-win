@@ -13,7 +13,7 @@ class TaggingTask(db.Model):
     filter_keywords = db.Column(db.Text, comment='筛选条件关键字JSON，关键字列表')
     total_count = db.Column(db.Integer, nullable=False, default=0, comment='总图片数')
     processed_count = db.Column(db.Integer, nullable=False, default=0, comment='已处理图片数')
-    status = db.Column(db.String(50), nullable=False, default='pending', comment='状态：pending, running, paused, completed, failed')
+    status = db.Column(db.String(50), nullable=False, default='pending', comment='状态：pending, running, paused, interrupted, completed, failed')
     note = db.Column(db.Text, comment='备注')
     last_error = db.Column(db.Text, comment='最后错误信息')
     started_at = db.Column(db.DateTime, comment='开始时间')

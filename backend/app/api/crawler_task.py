@@ -340,12 +340,61 @@ def batch_delete_tasks():
         logger.error(f"Error in batch_delete_tasks: {str(e)}")
         return jsonify({'code': 500, 'message': str(e)}), 500
 
+@bp.route('/<int:task_id>/reset', methods=['POST'])
+def reset_task(task_id):
+    """重置抓取任务"""
+    try:
+        task = CrawlerTask.query.get_or_404(task_id)
+        
+        # 如果任务正在运行中，先将其标记为失败
+        if task.status == 'running':
+            task.status = 'failed'
+            task.last_error = '任务被手动重置'
+            task.finished_at = datetime.now()
+            current_app.logger.info(f"运行中的任务被重置: task_id={task_id}, name={task.name}")
+        
+        # 重置任务状态
+        task.status = 'pending'
+        task.processed_posts = 0
+        task.processed_comments = 0
+        task.downloaded_media = 0
+        task.current_keyword = None
+        task.last_error = None
+        task.progress_json = None
+        task.started_at = None
+        task.finished_at = None
+        
+        db.session.commit()
+        
+        current_app.logger.info(f"抓取任务已重置: task_id={task_id}, name={task.name}")
+        
+        return jsonify({
+            'code': 200,
+            'message': '任务重置成功',
+            'data': task.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        error_detail = traceback.format_exc()
+        current_app.logger.error(f"重置抓取任务失败: {error_detail}")
+        return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
+
 @bp.route('/<int:task_id>/crawl', methods=['POST'])
 def crawl_task(task_id):
     """执行抓取任务"""
     current_app.logger.info(f"开始执行抓取任务，ID: {task_id}")
     try:
         task = CrawlerTask.query.get_or_404(task_id)
+        
+        # 检查是否有需求关联，如果有，检查前置任务是否完成
+        try:
+            from app.api.requirement import check_prerequisite_tasks
+            is_ok, error_msg = check_prerequisite_tasks('crawler', task_id)
+            if not is_ok:
+                return jsonify({'code': 400, 'message': error_msg}), 400
+        except Exception as e:
+            current_app.logger.warning(f"检查前置任务失败: {e}")
         
         # 检查任务是否已经在运行
         if task.status == 'running':
@@ -594,6 +643,18 @@ def crawl_task(task_id):
                                 
                                 current_app.logger.info(f"抓取任务完成，任务ID: {task_id}, 处理关键字数: {processed_count}, 跳过关键字数: {skipped_count}, 总统计: {total_stats}")
                                 
+                                # 刷新任务对象以确保状态已保存
+                                db.session.refresh(task)
+                                
+                                # 更新需求关联任务状态
+                                try:
+                                    from app.api.requirement import check_and_update_requirement_task_status
+                                    current_app.logger.info(f"开始更新需求任务状态: crawler, task_id={task_id}, task.status={task.status}")
+                                    check_and_update_requirement_task_status('crawler', task_id)
+                                    current_app.logger.info(f"需求任务状态更新完成: crawler, task_id={task_id}")
+                                except Exception as e:
+                                    current_app.logger.error(f"更新需求任务状态失败: {e}", exc_info=True)
+                                
                                 # 刷新关键字统计记录
                                 try:
                                     from app.models.image import Image
@@ -637,6 +698,18 @@ def crawl_task(task_id):
                             
                             db.session.commit()
                             
+                            # 刷新任务对象以确保状态已保存
+                            db.session.refresh(task)
+                            
+                            # 更新需求关联任务状态
+                            try:
+                                from app.api.requirement import check_and_update_requirement_task_status
+                                current_app.logger.info(f"开始更新需求任务状态（失败）: crawler, task_id={task_id}, task.status={task.status}")
+                                check_and_update_requirement_task_status('crawler', task_id)
+                                current_app.logger.info(f"需求任务状态更新完成（失败）: crawler, task_id={task_id}")
+                            except Exception as e:
+                                current_app.logger.error(f"更新需求任务状态失败: {e}", exc_info=True)
+                            
                     except Exception as e:
                         current_app.logger.error(f"后台抓取任务异常，任务ID: {task_id}: {str(e)}", exc_info=True)
                         try:
@@ -646,6 +719,18 @@ def crawl_task(task_id):
                                 task.last_error = str(e)
                                 task.finished_at = datetime.now()
                                 db.session.commit()
+                                
+                                # 刷新任务对象以确保状态已保存
+                                db.session.refresh(task)
+                                
+                                # 更新需求关联任务状态
+                                try:
+                                    from app.api.requirement import check_and_update_requirement_task_status
+                                    current_app.logger.info(f"开始更新需求任务状态（异常失败）: crawler, task_id={task_id}, task.status={task.status}")
+                                    check_and_update_requirement_task_status('crawler', task_id)
+                                    current_app.logger.info(f"需求任务状态更新完成（异常失败）: crawler, task_id={task_id}")
+                                except Exception as update_error:
+                                    current_app.logger.error(f"更新需求任务状态失败: {update_error}", exc_info=True)
                         except:
                             pass
             finally:

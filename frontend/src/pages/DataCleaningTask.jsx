@@ -11,7 +11,8 @@ import {
   message,
   Popconfirm,
   Tag,
-  Checkbox
+  Checkbox,
+  Progress
 } from 'antd'
 import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, PlayCircleOutlined, ReloadOutlined, SyncOutlined } from '@ant-design/icons'
 import api from '../services/api'
@@ -310,11 +311,25 @@ const DataCleaningTask = () => {
       }
     },
     {
-      title: '处理总数',
-      dataIndex: 'processed_count',
-      key: 'processed_count',
-      width: 100,
-      align: 'right'
+      title: '进度',
+      key: 'progress',
+      width: 200,
+      render: (_, record) => {
+        const { processed_count = 0, total_count = 0 } = record
+        const percentage = total_count > 0 ? Math.round((processed_count / total_count) * 100) : 0
+        return (
+          <div>
+            <div style={{ marginBottom: 4 }}>
+              {processed_count} / {total_count}
+            </div>
+            <Progress 
+              percent={percentage} 
+              size="small"
+              status={record.status === 'running' ? 'active' : record.status === 'completed' ? 'success' : 'normal'}
+            />
+          </div>
+        )
+      }
     },
     {
       title: '创建时间',
@@ -339,9 +354,9 @@ const DataCleaningTask = () => {
               执行
             </Button>
           )}
-          {(record.status === 'completed' || record.status === 'failed') && (
+          {(record.status === 'completed' || record.status === 'failed' || record.status === 'running') && (
             <Popconfirm
-              title="确定要重置这个任务吗？重置后可以重新执行。"
+              title={record.status === 'running' ? "确定要重置这个运行中的任务吗？重置后任务将停止执行，可以重新执行。" : "确定要重置这个任务吗？重置后可以重新执行。"}
               onConfirm={() => handleReset(record.id)}
               okText="确定"
               cancelText="取消"
@@ -350,6 +365,7 @@ const DataCleaningTask = () => {
                 type="link"
                 size="small"
                 icon={<ReloadOutlined />}
+                danger={record.status === 'running'}
               >
                 重置
               </Button>

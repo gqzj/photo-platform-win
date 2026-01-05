@@ -19,7 +19,9 @@ import {
   ToolOutlined,
   DeleteOutlined,
   BarChartOutlined,
-  ProjectOutlined
+  ProjectOutlined,
+  BgColorsOutlined,
+  SearchOutlined
 } from '@ant-design/icons'
 
 const { Header, Sider, Content } = Layout
@@ -33,6 +35,9 @@ const MainLayout = ({ children }) => {
   const getOpenKeys = () => {
     const path = location.pathname
     if (path.startsWith('/tagging/feature')) {
+      return ['features-menu']
+    }
+    if (path.startsWith('/tagging/feature-group')) {
       return ['features-menu']
     }
     return []
@@ -66,6 +71,11 @@ const MainLayout = ({ children }) => {
       key: 'requirement',
       icon: <ProjectOutlined />,
       label: '需求'
+    },
+    {
+      key: 'style',
+      icon: <BgColorsOutlined />,
+      label: '风格'
     },
     {
       key: 'tools',
@@ -124,12 +134,18 @@ const MainLayout = ({ children }) => {
           children: [
             {
               key: '/tagging/features',
+              icon: <UnorderedListOutlined />,
               label: '特征列表'
             },
             {
               key: '/tagging/feature-analysis',
               icon: <BarChartOutlined />,
               label: '特征分析'
+            },
+            {
+              key: '/tagging/feature-groups',
+              icon: <AppstoreOutlined />,
+              label: '特征组管理'
             }
           ]
         },
@@ -180,6 +196,18 @@ const MainLayout = ({ children }) => {
           label: '需求管理'
         }
       ],
+      style: [
+        {
+          key: '/style/management',
+          icon: <BgColorsOutlined />,
+          label: '风格定义管理'
+        },
+        {
+          key: '/style/match',
+          icon: <SearchOutlined />,
+          label: '风格匹配'
+        }
+      ],
       settings: [
         {
           key: '/settings/directory',
@@ -199,6 +227,7 @@ const MainLayout = ({ children }) => {
     if (path.startsWith('/tagging')) return 'tagging'
     if (path.startsWith('/sample-set')) return 'sample-set'
     if (path.startsWith('/requirement')) return 'requirement'
+    if (path.startsWith('/style')) return 'style'
     if (path.startsWith('/tools')) return 'tools'
     if (path.startsWith('/settings')) return 'settings'
     return 'library' // 默认
@@ -215,6 +244,7 @@ const MainLayout = ({ children }) => {
       tagging: '/tagging/features',
       'sample-set': '/sample-set/management',
       requirement: '/requirement/management',
+      style: '/style/management',
       tools: '/tools/cleaning-test',
       settings: '/settings/directory'
     }
