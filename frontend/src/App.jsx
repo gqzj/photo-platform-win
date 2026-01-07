@@ -23,6 +23,12 @@ import RequirementProgress from './pages/RequirementProgress'
 import StyleManagement from './pages/StyleManagement'
 import StyleImageView from './pages/StyleImageView'
 import StyleMatch from './pages/StyleMatch'
+import LutFileManagement from './pages/LutFileManagement'
+import SampleImageManagement from './pages/SampleImageManagement'
+import SampleImageLutResults from './pages/SampleImageLutResults'
+import LutAnalysisTest from './pages/LutAnalysisTest'
+import LutClusterAnalysis from './pages/LutClusterAnalysis'
+import ImageSimilarityTest from './pages/ImageSimilarityTest'
 
 function App() {
   return (
@@ -45,6 +51,8 @@ function App() {
           <Route path="/tagging/recycle" element={<ImageRecycle />} />
           <Route path="/tools/cleaning-test" element={<ImageCleaningTest />} />
           <Route path="/tools/tagging-test" element={<ImageTaggingTest />} />
+          <Route path="/tools/lut-analysis-test" element={<LutAnalysisTest />} />
+          <Route path="/tools/image-similarity-test" element={<ImageSimilarityTest />} />
           <Route path="/sample-set/management" element={<SampleSetManagement />} />
           <Route path="/sample-set/view" element={<SampleSetView />} />
           <Route path="/requirement/management" element={<RequirementManagement />} />
@@ -52,6 +60,10 @@ function App() {
           <Route path="/style/management" element={<StyleManagement />} />
           <Route path="/style/view" element={<StyleImageView />} />
           <Route path="/style/match" element={<StyleMatch />} />
+          <Route path="/lut-analysis/files" element={<LutFileManagement />} />
+          <Route path="/lut-analysis/sample-images" element={<SampleImageManagement />} />
+          <Route path="/lut-analysis/sample-images/:imageId/lut-results" element={<SampleImageLutResults />} />
+          <Route path="/lut-analysis/cluster" element={<LutClusterAnalysis />} />
           <Route path="/settings/directory" element={<SettingsDirectory />} />
         </Routes>
       </MainLayout>

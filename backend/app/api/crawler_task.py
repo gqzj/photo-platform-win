@@ -409,20 +409,41 @@ def crawl_task(task_id):
                 else:
                     return jsonify({'code': 400, 'message': '任务正在运行中，请稍候'}), 400
         
-        # 验证任务类型
-        if task.task_type != 'keyword':
-            return jsonify({'code': 400, 'message': '当前只支持关键字爬取类型的任务'}), 400
-        
-        # 获取关键字
-        keywords = []
-        if task.keywords_json:
-            try:
-                keywords = json.loads(task.keywords_json)
-            except:
-                return jsonify({'code': 400, 'message': '关键字格式错误'}), 400
-        
-        if not keywords:
-            return jsonify({'code': 400, 'message': '请先设置关键字'}), 400
+        # 验证任务类型和必要参数
+        if task.task_type == 'keyword':
+            # 获取关键字
+            keywords = []
+            if task.keywords_json:
+                try:
+                    keywords = json.loads(task.keywords_json)
+                except:
+                    return jsonify({'code': 400, 'message': '关键字格式错误'}), 400
+            
+            if not keywords:
+                return jsonify({'code': 400, 'message': '请先设置关键字'}), 400
+        elif task.task_type == 'url':
+            # URL类型任务需要target_url
+            if not task.target_url:
+                return jsonify({'code': 400, 'message': '目标URL类型任务需要填写target_url'}), 400
+            
+            # 获取关键字（用于标记帖子），如果没有则使用默认值
+            keyword = None
+            if task.keywords_json:
+                try:
+                    keywords_list = json.loads(task.keywords_json)
+                    if isinstance(keywords_list, list) and len(keywords_list) > 0:
+                        keyword = keywords_list[0]
+                except:
+                    pass
+            
+            if not keyword:
+                # 使用默认值："网页-" + 任务名称
+                keyword = f"网页-{task.name}"
+                # 保存到keywords_json
+                task.keywords_json = json.dumps([keyword], ensure_ascii=False)
+                db.session.commit()
+        else:
+            return jsonify({'code': 400, 'message': f'不支持的任务类型: {task.task_type}'}), 400
         
         # 检查是否有其他任务正在运行（除了当前任务）
         running_task = CrawlerTask.query.filter(
@@ -489,9 +510,6 @@ def crawl_task(task_id):
             except:
                 pass
         
-        current_app.logger.info(f"开始抓取，关键字数量: {len(keywords)}, 每个关键字最大帖子数: {max_posts_per_keyword}, 任务ID: {task_id}")
-        current_app.logger.info(f"将跳过已抓取的关键字（在keyword_statistics表中）")
-        
         # 在后台线程中执行抓取，避免阻塞HTTP请求和Flask自动重载
         def run_crawl():
             """在后台线程中执行抓取"""
@@ -510,138 +528,272 @@ def crawl_task(task_id):
                     try:
                         crawler_service = get_crawler_service()
                         
-                        # 累计所有关键字的统计信息
-                        total_stats = {
-                            'posts': 0,
-                            'comments': 0,
-                            'media': 0,
-                            'images': 0,
-                            'errors': [],
-                            'keywords': []  # 记录每个关键字的处理结果
-                        }
+                        # 重新获取任务（在app_context中）
+                        task = CrawlerTask.query.get(task_id)
+                        if not task:
+                            current_app.logger.error(f"任务不存在，ID: {task_id}")
+                            return
                         
-                        # 顺序处理每个关键字
-                        processed_count = 0
-                        skipped_count = 0
-                        for idx, keyword in enumerate(keywords):
-                            if not keyword or not keyword.strip():
-                                continue
+                        # 根据任务类型执行不同的爬取逻辑
+                        if task.task_type == 'url':
+                            # URL类型任务
+                            current_app.logger.info(f"开始抓取URL类型任务，目标URL: {task.target_url}, 任务ID: {task_id}")
                             
-                            keyword = keyword.strip()
+                            # 获取关键字
+                            keyword = None
+                            if task.keywords_json:
+                                try:
+                                    keywords_list = json.loads(task.keywords_json)
+                                    if isinstance(keywords_list, list) and len(keywords_list) > 0:
+                                        keyword = keywords_list[0]
+                                except:
+                                    pass
                             
-                            # 检查关键字是否已经抓取过（在keyword_statistics表中）
-                            existing_keyword = KeywordStatistics.query.filter_by(keyword=keyword).first()
-                            if existing_keyword:
-                                skipped_count += 1
-                                current_app.logger.info(f"跳过已抓取的关键字 [{idx + 1}/{len(keywords)}]: {keyword} (已有 {existing_keyword.image_count} 张图片)")
-                                total_stats['keywords'].append({
-                                    'keyword': keyword,
-                                    'success': True,
-                                    'skipped': True,
-                                    'message': f'已抓取过，跳过（已有 {existing_keyword.image_count} 张图片）'
-                                })
-                                continue
+                            if not keyword:
+                                keyword = f"网页-{task.name}"
                             
-                            processed_count += 1
-                            current_app.logger.info(f"开始处理关键字 [{idx + 1}/{len(keywords)}]: {keyword}")
+                            # 执行URL爬取
+                            result = crawler_service.crawl_by_url(
+                                target_url=task.target_url,
+                                keyword=keyword,
+                                cookie_json_str=cookie_json_str,
+                                max_posts=max_posts_per_keyword,
+                                task_id=task_id
+                            )
                             
-                            # 更新当前关键字
+                            # 更新任务状态
                             task = CrawlerTask.query.get(task_id)
                             if task:
-                                task.current_keyword = f"{keyword} ({idx + 1}/{len(keywords)})"
-                                db.session.commit()
-                            
-                            try:
-                                # 执行单个关键字的抓取
-                                result = crawler_service.crawl_by_keyword(
-                                    keyword=keyword,
-                                    cookie_json_str=cookie_json_str,
-                                    max_posts=max_posts_per_keyword,
-                                    task_id=task_id
-                                )
-                                
-                                # 累计统计信息
                                 if result.get('success'):
-                                    total_stats['posts'] += result['stats'].get('posts', 0)
-                                    total_stats['comments'] += result['stats'].get('comments', 0)
-                                    total_stats['media'] += result['stats'].get('media', 0)
-                                    total_stats['images'] += result['stats'].get('images', 0)
-                                    total_stats['errors'].extend(result['stats'].get('errors', []))
-                                    
+                                    task.status = 'completed'
+                                    task.finished_at = datetime.now()
+                                    task.processed_posts = result['stats'].get('posts', 0)
+                                    task.processed_comments = result['stats'].get('comments', 0)
+                                    task.downloaded_media = result['stats'].get('media', 0)
+                                    progress = {
+                                        'posts': result['stats'].get('posts', 0),
+                                        'comments': result['stats'].get('comments', 0),
+                                        'media': result['stats'].get('media', 0),
+                                        'images': result['stats'].get('images', 0),
+                                        'errors': result['stats'].get('errors', [])
+                                    }
+                                    task.progress_json = json.dumps(progress, ensure_ascii=False)
+                                    current_app.logger.info(f"URL类型任务完成，任务ID: {task_id}, 统计: {result['stats']}")
+                                else:
+                                    task.status = 'failed'
+                                    task.finished_at = datetime.now()
+                                    task.last_error = result.get('message', '未知错误')
+                                    current_app.logger.error(f"URL类型任务失败，任务ID: {task_id}: {result.get('message', '未知错误')}")
+                                
+                                db.session.commit()
+                                
+                                # 更新需求任务状态
+                                try:
+                                    from app.api.requirement import check_and_update_requirement_task_status
+                                    check_and_update_requirement_task_status('crawler', task_id)
+                                except Exception as e:
+                                    current_app.logger.error(f"更新需求任务状态失败: {e}", exc_info=True)
+                        
+                        elif task.task_type == 'keyword':
+                            # 关键字类型任务
+                            # 获取关键字
+                            keywords = []
+                            if task.keywords_json:
+                                try:
+                                    keywords = json.loads(task.keywords_json)
+                                except:
+                                    pass
+                            
+                            current_app.logger.info(f"开始抓取，关键字数量: {len(keywords)}, 每个关键字最大帖子数: {max_posts_per_keyword}, 任务ID: {task_id}")
+                            current_app.logger.info(f"将跳过已抓取的关键字（在keyword_statistics表中）")
+                            
+                            # 累计所有关键字的统计信息
+                            total_stats = {
+                                'posts': 0,
+                                'comments': 0,
+                                'media': 0,
+                                'images': 0,
+                                'errors': [],
+                                'keywords': []  # 记录每个关键字的处理结果
+                            }
+                            
+                            # 顺序处理每个关键字
+                            processed_count = 0
+                            skipped_count = 0
+                            for idx, keyword in enumerate(keywords):
+                                if not keyword or not keyword.strip():
+                                    continue
+                                
+                                keyword = keyword.strip()
+                                
+                                # 检查关键字是否已经抓取过（在keyword_statistics表中）
+                                existing_keyword = KeywordStatistics.query.filter_by(keyword=keyword).first()
+                                if existing_keyword:
+                                    skipped_count += 1
+                                    current_app.logger.info(f"跳过已抓取的关键字 [{idx + 1}/{len(keywords)}]: {keyword} (已有 {existing_keyword.image_count} 张图片)")
                                     total_stats['keywords'].append({
                                         'keyword': keyword,
                                         'success': True,
-                                        'stats': result['stats']
+                                        'skipped': True,
+                                        'message': f'已抓取过，跳过（已有 {existing_keyword.image_count} 张图片）'
                                     })
+                                    continue
+                                
+                                processed_count += 1
+                                current_app.logger.info(f"开始处理关键字 [{idx + 1}/{len(keywords)}]: {keyword}")
+                                
+                                # 更新当前关键字
+                                task = CrawlerTask.query.get(task_id)
+                                if task:
+                                    task.current_keyword = f"{keyword} ({idx + 1}/{len(keywords)})"
+                                    db.session.commit()
+                                
+                                try:
+                                    # 执行单个关键字的抓取
+                                    result = crawler_service.crawl_by_keyword(
+                                        keyword=keyword,
+                                        cookie_json_str=cookie_json_str,
+                                        max_posts=max_posts_per_keyword,
+                                        task_id=task_id
+                                    )
                                     
-                                    current_app.logger.info(f"关键字 '{keyword}' 抓取完成，统计: {result['stats']}")
-                                else:
-                                    error_msg = f"关键字 '{keyword}' 抓取失败: {result.get('message', '未知错误')}"
+                                    # 累计统计信息
+                                    if result.get('success'):
+                                        total_stats['posts'] += result['stats'].get('posts', 0)
+                                        total_stats['comments'] += result['stats'].get('comments', 0)
+                                        total_stats['media'] += result['stats'].get('media', 0)
+                                        total_stats['images'] += result['stats'].get('images', 0)
+                                        total_stats['errors'].extend(result['stats'].get('errors', []))
+                                        
+                                        total_stats['keywords'].append({
+                                            'keyword': keyword,
+                                            'success': True,
+                                            'stats': result['stats']
+                                        })
+                                        
+                                        current_app.logger.info(f"关键字 '{keyword}' 抓取完成，统计: {result['stats']}")
+                                    else:
+                                        error_msg = f"关键字 '{keyword}' 抓取失败: {result.get('message', '未知错误')}"
+                                        total_stats['errors'].append(error_msg)
+                                        total_stats['keywords'].append({
+                                            'keyword': keyword,
+                                            'success': False,
+                                            'error': result.get('message', '未知错误')
+                                        })
+                                        current_app.logger.error(error_msg)
+                                        
+                                        # 更新任务进度（即使失败也更新）
+                                        task = CrawlerTask.query.get(task_id)
+                                        if task:
+                                            task.processed_posts = total_stats['posts']
+                                            task.processed_comments = total_stats['comments']
+                                            task.downloaded_media = total_stats['media']
+                                            progress = {
+                                                'posts': total_stats['posts'],
+                                                'comments': total_stats['comments'],
+                                                'media': total_stats['media'],
+                                                'images': total_stats['images'],
+                                                'errors': total_stats['errors'],
+                                                'keywords': total_stats['keywords']
+                                            }
+                                            task.progress_json = json.dumps(progress, ensure_ascii=False)
+                                            db.session.commit()
+                                    
+                                except Exception as e:
+                                    error_msg = f"关键字 '{keyword}' 处理异常: {str(e)}"
                                     total_stats['errors'].append(error_msg)
                                     total_stats['keywords'].append({
                                         'keyword': keyword,
                                         'success': False,
-                                        'error': result.get('message', '未知错误')
+                                        'error': str(e)
                                     })
-                                    current_app.logger.error(error_msg)
+                                    current_app.logger.error(error_msg, exc_info=True)
                                     
-                                    # 更新任务进度（即使失败也更新）
-                                    task = CrawlerTask.query.get(task_id)
-                                    if task:
-                                        task.processed_posts = total_stats['posts']
-                                        task.processed_comments = total_stats['comments']
-                                        task.downloaded_media = total_stats['media']
-                                        progress = {
-                                            'posts': total_stats['posts'],
-                                            'comments': total_stats['comments'],
-                                            'media': total_stats['media'],
-                                            'images': total_stats['images'],
-                                            'errors': total_stats['errors'],
-                                            'keywords': total_stats['keywords']
-                                        }
-                                        task.progress_json = json.dumps(progress, ensure_ascii=False)
-                                        db.session.commit()
-                                
-                            except Exception as e:
-                                error_msg = f"关键字 '{keyword}' 处理异常: {str(e)}"
-                                total_stats['errors'].append(error_msg)
-                                total_stats['keywords'].append({
-                                    'keyword': keyword,
-                                    'success': False,
-                                    'error': str(e)
-                                })
-                                current_app.logger.error(error_msg, exc_info=True)
-                                
-                                # 继续处理下一个关键字，不中断整个任务
-                                continue
-                        
-                        # 所有关键字处理完成，更新任务状态
-                        task = CrawlerTask.query.get(task_id)
-                        if task:
-                            # 判断任务是否成功（至少有一个关键字成功）
-                            has_success = any(k.get('success', False) and not k.get('skipped', False) for k in total_stats['keywords'])
+                                    # 继续处理下一个关键字，不中断整个任务
+                                    continue
                             
-                            if has_success:
-                                task.status = 'completed'
-                                task.finished_at = datetime.now()
-                                task.processed_posts = total_stats['posts']
-                                task.processed_comments = total_stats['comments']
-                                task.downloaded_media = total_stats['media']
-                                task.current_keyword = f"已完成 ({len(keywords)}/{len(keywords)})"
-                                task.last_error = None
+                            # 所有关键字处理完成，更新任务状态（仅关键字类型任务）
+                            task = CrawlerTask.query.get(task_id)
+                            if task:
+                                # 判断任务是否成功（至少有一个关键字成功）
+                                has_success = any(k.get('success', False) and not k.get('skipped', False) for k in total_stats['keywords'])
                                 
-                                # 更新进度JSON
-                                progress = {
-                                    'posts': total_stats['posts'],
-                                    'comments': total_stats['comments'],
-                                    'media': total_stats['media'],
-                                    'images': total_stats['images'],
-                                    'errors': total_stats['errors'],
-                                    'keywords': total_stats['keywords']
-                                }
-                                task.progress_json = json.dumps(progress, ensure_ascii=False)
+                                if has_success:
+                                    task.status = 'completed'
+                                    task.finished_at = datetime.now()
+                                    task.processed_posts = total_stats['posts']
+                                    task.processed_comments = total_stats['comments']
+                                    task.downloaded_media = total_stats['media']
+                                    task.current_keyword = f"已完成 ({len(keywords)}/{len(keywords)})"
+                                    task.last_error = None
+                                    
+                                    # 更新进度JSON
+                                    progress = {
+                                        'posts': total_stats['posts'],
+                                        'comments': total_stats['comments'],
+                                        'media': total_stats['media'],
+                                        'images': total_stats['images'],
+                                        'errors': total_stats['errors'],
+                                        'keywords': total_stats['keywords']
+                                    }
+                                    task.progress_json = json.dumps(progress, ensure_ascii=False)
+                                    
+                                    current_app.logger.info(f"抓取任务完成，任务ID: {task_id}, 处理关键字数: {processed_count}, 跳过关键字数: {skipped_count}, 总统计: {total_stats}")
+                                    
+                                    # 刷新任务对象以确保状态已保存
+                                    db.session.refresh(task)
+                                    
+                                    # 更新需求关联任务状态
+                                    try:
+                                        from app.api.requirement import check_and_update_requirement_task_status
+                                        current_app.logger.info(f"开始更新需求任务状态: crawler, task_id={task_id}, task.status={task.status}")
+                                        check_and_update_requirement_task_status('crawler', task_id)
+                                        current_app.logger.info(f"需求任务状态更新完成: crawler, task_id={task_id}")
+                                    except Exception as e:
+                                        current_app.logger.error(f"更新需求任务状态失败: {e}", exc_info=True)
+                                    
+                                    # 刷新关键字统计记录
+                                    try:
+                                        from app.models.image import Image
+                                        from sqlalchemy import func
+                                        
+                                        # 清空现有数据
+                                        KeywordStatistics.query.delete()
+                                        
+                                        # 从images表统计关键字
+                                        results = db.session.query(
+                                            Image.keyword,
+                                            func.count(Image.id).label('image_count')
+                                        ).filter(
+                                            Image.keyword.isnot(None),
+                                            Image.keyword != ''
+                                        ).group_by(Image.keyword).all()
+                                        
+                                        # 批量插入
+                                        keyword_stats = []
+                                        for keyword, count in results:
+                                            keyword_stat = KeywordStatistics(
+                                                keyword=keyword,
+                                                image_count=count
+                                            )
+                                            keyword_stats.append(keyword_stat)
+                                        
+                                        if keyword_stats:
+                                            db.session.bulk_save_objects(keyword_stats)
+                                        
+                                        db.session.commit()
+                                        current_app.logger.info(f"关键字统计已刷新，共 {len(keyword_stats)} 个关键字")
+                                    except Exception as refresh_error:
+                                        current_app.logger.error(f"刷新关键字统计失败: {str(refresh_error)}", exc_info=True)
+                                        db.session.rollback()
+                                else:
+                                    # 所有关键字都失败
+                                    task.status = 'failed'
+                                    task.finished_at = datetime.now()
+                                    task.last_error = '所有关键字抓取都失败'
+                                    current_app.logger.error(f"抓取任务失败，任务ID: {task_id}: 所有关键字抓取都失败")
                                 
-                                current_app.logger.info(f"抓取任务完成，任务ID: {task_id}, 处理关键字数: {processed_count}, 跳过关键字数: {skipped_count}, 总统计: {total_stats}")
+                                db.session.commit()
                                 
                                 # 刷新任务对象以确保状态已保存
                                 db.session.refresh(task)
@@ -649,66 +801,11 @@ def crawl_task(task_id):
                                 # 更新需求关联任务状态
                                 try:
                                     from app.api.requirement import check_and_update_requirement_task_status
-                                    current_app.logger.info(f"开始更新需求任务状态: crawler, task_id={task_id}, task.status={task.status}")
+                                    current_app.logger.info(f"开始更新需求任务状态（失败）: crawler, task_id={task_id}, task.status={task.status}")
                                     check_and_update_requirement_task_status('crawler', task_id)
-                                    current_app.logger.info(f"需求任务状态更新完成: crawler, task_id={task_id}")
+                                    current_app.logger.info(f"需求任务状态更新完成（失败）: crawler, task_id={task_id}")
                                 except Exception as e:
                                     current_app.logger.error(f"更新需求任务状态失败: {e}", exc_info=True)
-                                
-                                # 刷新关键字统计记录
-                                try:
-                                    from app.models.image import Image
-                                    from sqlalchemy import func
-                                    
-                                    # 清空现有数据
-                                    KeywordStatistics.query.delete()
-                                    
-                                    # 从images表统计关键字
-                                    results = db.session.query(
-                                        Image.keyword,
-                                        func.count(Image.id).label('image_count')
-                                    ).filter(
-                                        Image.keyword.isnot(None),
-                                        Image.keyword != ''
-                                    ).group_by(Image.keyword).all()
-                                    
-                                    # 批量插入
-                                    keyword_stats = []
-                                    for keyword, count in results:
-                                        keyword_stat = KeywordStatistics(
-                                            keyword=keyword,
-                                            image_count=count
-                                        )
-                                        keyword_stats.append(keyword_stat)
-                                    
-                                    if keyword_stats:
-                                        db.session.bulk_save_objects(keyword_stats)
-                                    
-                                    db.session.commit()
-                                    current_app.logger.info(f"关键字统计已刷新，共 {len(keyword_stats)} 个关键字")
-                                except Exception as refresh_error:
-                                    current_app.logger.error(f"刷新关键字统计失败: {str(refresh_error)}", exc_info=True)
-                                    db.session.rollback()
-                            else:
-                                # 所有关键字都失败
-                                task.status = 'failed'
-                                task.finished_at = datetime.now()
-                                task.last_error = '所有关键字抓取都失败'
-                                current_app.logger.error(f"抓取任务失败，任务ID: {task_id}: 所有关键字抓取都失败")
-                            
-                            db.session.commit()
-                            
-                            # 刷新任务对象以确保状态已保存
-                            db.session.refresh(task)
-                            
-                            # 更新需求关联任务状态
-                            try:
-                                from app.api.requirement import check_and_update_requirement_task_status
-                                current_app.logger.info(f"开始更新需求任务状态（失败）: crawler, task_id={task_id}, task.status={task.status}")
-                                check_and_update_requirement_task_status('crawler', task_id)
-                                current_app.logger.info(f"需求任务状态更新完成（失败）: crawler, task_id={task_id}")
-                            except Exception as e:
-                                current_app.logger.error(f"更新需求任务状态失败: {e}", exc_info=True)
                             
                     except Exception as e:
                         current_app.logger.error(f"后台抓取任务异常，任务ID: {task_id}: {str(e)}", exc_info=True)

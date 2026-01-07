@@ -122,8 +122,25 @@ const CrawlerTask = () => {
             keywords: keywords
           })
         } else if (record.task_type === 'url') {
+          // URL类型：获取关键字（如果有），否则使用默认值
+          let keyword = null
+          if (record.keywords_json) {
+            try {
+              const parsed = JSON.parse(record.keywords_json)
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                keyword = parsed[0]
+              }
+            } catch {
+              keyword = null
+            }
+          }
+          // 如果没有关键字，使用默认值
+          if (!keyword) {
+            keyword = `网页-${record.name}`
+          }
           form.setFieldsValue({
-            target_url: record.target_url
+            target_url: record.target_url,
+            keyword: keyword
           })
         }
       }, 100)
@@ -152,10 +169,16 @@ const CrawlerTask = () => {
         }
         delete submitData.keywords
         delete submitData.target_url
+        delete submitData.keyword
       } else if (submitData.task_type === 'url') {
-        // URL类型：清除keywords_json
+        // URL类型：处理关键字（默认值为"网页-" + 任务名称）
+        let keyword = submitData.keyword
+        if (!keyword || !keyword.trim()) {
+          keyword = `网页-${submitData.name}`
+        }
+        submitData.keywords_json = JSON.stringify([keyword.trim()])
         delete submitData.keywords
-        delete submitData.keywords_json
+        delete submitData.keyword
       }
 
       if (editingRecord) {
@@ -380,8 +403,8 @@ const CrawlerTask = () => {
       width: 300,
       fixed: 'right',
       render: (_, record) => {
-        // 显示抓取按钮的条件：关键字类型，且状态不是running（或者running状态但可以重新运行）
-        const showCrawlButton = record.task_type === 'keyword' && record.status !== 'running'
+        // 显示抓取按钮的条件：关键字类型或URL类型，且状态不是running
+        const showCrawlButton = (record.task_type === 'keyword' || record.task_type === 'url') && record.status !== 'running'
         return (
           <Space>
             {showCrawlButton && (
@@ -397,7 +420,7 @@ const CrawlerTask = () => {
                 抓取
               </Button>
             )}
-            {record.task_type === 'keyword' && record.status === 'running' && (
+            {(record.task_type === 'keyword' || record.task_type === 'url') && record.status === 'running' && (
               <Popconfirm
                 title="确定要重置这个运行中的任务吗？重置后任务将停止并可以重新运行"
                 onConfirm={() => handleReset(record)}
@@ -513,7 +536,23 @@ const CrawlerTask = () => {
             label="任务名称"
             rules={[{ required: true, message: '请输入任务名称' }]}
           >
-            <Input placeholder="请输入任务名称" />
+            <Input 
+              placeholder="请输入任务名称"
+              onChange={(e) => {
+                // 如果当前是URL类型，更新默认关键字
+                const taskType = form.getFieldValue('task_type')
+                if (taskType === 'url') {
+                  const taskName = e.target.value || '任务'
+                  const currentKeyword = form.getFieldValue('keyword')
+                  // 如果关键字是默认值格式，则更新；否则保持用户输入的值
+                  if (!currentKeyword || currentKeyword.startsWith('网页-')) {
+                    form.setFieldsValue({
+                      keyword: `网页-${taskName}`
+                    })
+                  }
+                }
+              }}
+            />
           </Form.Item>
 
           <Form.Item
@@ -563,7 +602,24 @@ const CrawlerTask = () => {
             label="任务类型"
             rules={[{ required: true, message: '请选择任务类型' }]}
           >
-            <Select placeholder="请选择任务类型">
+            <Select 
+              placeholder="请选择任务类型"
+              onChange={(value) => {
+                // 当切换到URL类型时，自动设置默认关键字
+                if (value === 'url') {
+                  const taskName = form.getFieldValue('name') || '任务'
+                  form.setFieldsValue({
+                    keyword: `网页-${taskName}`
+                  })
+                } else if (value === 'keyword') {
+                  // 切换到关键字类型时，清空URL相关字段
+                  form.setFieldsValue({
+                    target_url: undefined,
+                    keyword: undefined
+                  })
+                }
+              }}
+            >
               <Option value="keyword">关键字爬取</Option>
               <Option value="url">目标URL</Option>
             </Select>
@@ -623,13 +679,27 @@ const CrawlerTask = () => {
               const taskType = getFieldValue('task_type')
               if (taskType === 'url') {
                 return (
-                  <Form.Item
-                    name="target_url"
-                    label="目标URL"
-                    rules={[{ required: true, message: '请输入目标URL' }]}
-                  >
-                    <Input placeholder="请输入目标URL" />
-                  </Form.Item>
+                  <>
+                    <Form.Item
+                      name="target_url"
+                      label="目标URL"
+                      rules={[{ required: true, message: '请输入目标URL' }]}
+                    >
+                      <Input placeholder="请输入目标URL" />
+                    </Form.Item>
+                    <Form.Item
+                      name="keyword"
+                      label="关键字"
+                      tooltip="用于标记抓取的帖子，默认为'网页-' + 任务名称"
+                    >
+                      <Input 
+                        placeholder="请输入关键字（可选，默认为'网页-' + 任务名称）"
+                        onChange={(e) => {
+                          // 如果用户清空了关键字，在提交时使用默认值
+                        }}
+                      />
+                    </Form.Item>
+                  </>
                 )
               }
               return null

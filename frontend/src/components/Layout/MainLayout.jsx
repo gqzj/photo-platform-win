@@ -21,7 +21,8 @@ import {
   BarChartOutlined,
   ProjectOutlined,
   BgColorsOutlined,
-  SearchOutlined
+  SearchOutlined,
+  FileSearchOutlined
 } from '@ant-design/icons'
 
 const { Header, Sider, Content } = Layout
@@ -76,6 +77,11 @@ const MainLayout = ({ children }) => {
       key: 'style',
       icon: <BgColorsOutlined />,
       label: '风格'
+    },
+    {
+      key: 'lut-analysis',
+      icon: <FileSearchOutlined />,
+      label: 'Lut分析'
     },
     {
       key: 'tools',
@@ -175,6 +181,16 @@ const MainLayout = ({ children }) => {
           key: '/tools/tagging-test',
           icon: <TagOutlined />,
           label: '数据打标测试'
+        },
+        {
+          key: '/tools/lut-analysis-test',
+          icon: <FileSearchOutlined />,
+          label: 'LUT分析测试'
+        },
+        {
+          key: '/tools/image-similarity-test',
+          icon: <SearchOutlined />,
+          label: '图片相似度测试'
         }
       ],
       'sample-set': [
@@ -208,6 +224,23 @@ const MainLayout = ({ children }) => {
           label: '风格匹配'
         }
       ],
+      'lut-analysis': [
+        {
+          key: '/lut-analysis/files',
+          icon: <FolderOutlined />,
+          label: 'Lut文件管理'
+        },
+        {
+          key: '/lut-analysis/sample-images',
+          icon: <FileImageOutlined />,
+          label: '样本图片管理'
+        },
+        {
+          key: '/lut-analysis/cluster',
+          icon: <AppstoreOutlined />,
+          label: 'LUT聚类分析'
+        }
+      ],
       settings: [
         {
           key: '/settings/directory',
@@ -228,6 +261,7 @@ const MainLayout = ({ children }) => {
     if (path.startsWith('/sample-set')) return 'sample-set'
     if (path.startsWith('/requirement')) return 'requirement'
     if (path.startsWith('/style')) return 'style'
+    if (path.startsWith('/lut-analysis')) return 'lut-analysis'
     if (path.startsWith('/tools')) return 'tools'
     if (path.startsWith('/settings')) return 'settings'
     return 'library' // 默认
@@ -245,6 +279,7 @@ const MainLayout = ({ children }) => {
       'sample-set': '/sample-set/management',
       requirement: '/requirement/management',
       style: '/style/management',
+      'lut-analysis': '/lut-analysis/files',
       tools: '/tools/cleaning-test',
       settings: '/settings/directory'
     }

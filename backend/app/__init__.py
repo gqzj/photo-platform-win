@@ -57,7 +57,7 @@ def create_app():
     CORS(app, resources={r"/api/*": {"origins": "*"}})
     
     # 注册蓝图
-    from app.api import image_capture, image_tagging, image_statistics, crawler_cookie, crawler_task, post, settings, feature, data_cleaning_task, image_recycle, tagging_task, image_cleaning_test, image_tagging_test, sample_set, keyword_statistics, feature_analysis, requirement, feature_group, style, style_match
+    from app.api import image_capture, image_tagging, image_statistics, crawler_cookie, crawler_task, post, settings, feature, data_cleaning_task, image_recycle, tagging_task, image_cleaning_test, image_tagging_test, sample_set, keyword_statistics, feature_analysis, requirement, feature_group, style, style_match, lut_category, lut_file, sample_image, tools
     
     app.register_blueprint(image_capture.bp, url_prefix='/api/images/capture')
     app.register_blueprint(image_tagging.bp, url_prefix='/api/images')
@@ -79,6 +79,10 @@ def create_app():
     app.register_blueprint(feature_group.bp, url_prefix='/api/feature-groups')
     app.register_blueprint(style.bp, url_prefix='/api/styles')
     app.register_blueprint(style_match.bp, url_prefix='/api/style-match')
+    app.register_blueprint(lut_category.bp, url_prefix='/api/lut-categories')
+    app.register_blueprint(lut_file.bp, url_prefix='/api/lut-files')
+    app.register_blueprint(sample_image.bp, url_prefix='/api/sample-images')
+    app.register_blueprint(tools.bp, url_prefix='/api/tools')
     
     return app
 

@@ -603,6 +603,184 @@ class XiaohongshuCrawlerService:
         
         return media_count, image_count
     
+    def crawl_by_url(self, target_url, keyword, cookie_json_str=None, max_posts=10, task_id=None):
+        """
+        根据目标URL爬取小红书内容（如用户主页等）
+        
+        Args:
+            target_url: 目标URL（如用户主页URL）
+            keyword: 搜索关键字（用于标记帖子）
+            cookie_json_str: Cookie JSON字符串
+            max_posts: 最大爬取帖子数
+            task_id: 任务ID（用于更新进度）
+        
+        Returns:
+            dict: 包含成功状态和统计信息
+        """
+        logger.info(f"开始爬取小红书，目标URL: {target_url}, 关键字: {keyword}, 最大帖子数: {max_posts}")
+        
+        stats = {
+            'posts': 0,
+            'comments': 0,
+            'media': 0,
+            'images': 0,
+            'errors': []
+        }
+        
+        try:
+            logger.info("启动Playwright浏览器...")
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(
+                    headless=False,  # 调试时设置为False，生产环境可设置为True
+                    args=['--disable-blink-features=AutomationControlled', '--disable-extensions']
+                )
+                logger.info("浏览器启动成功")
+                
+                # 创建上下文
+                context_options = {
+                    'viewport': {'width': 1280, 'height': 800},
+                    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'locale': 'zh-CN'
+                }
+                
+                context = browser.new_context(**context_options)
+                logger.info("浏览器上下文创建成功")
+                
+                # 如果有Cookie，添加到上下文
+                if cookie_json_str:
+                    cookie_list = self.get_cookie_list(cookie_json_str)
+                    if cookie_list:
+                        try:
+                            context.add_cookies(cookie_list)
+                            logger.info(f"成功添加 {len(cookie_list)} 个Cookie")
+                        except Exception as e:
+                            logger.warning(f"添加Cookie失败: {e}")
+                
+                page = context.new_page()
+                logger.info("新页面创建成功")
+                
+                try:
+                    # 访问目标URL
+                    logger.info(f"访问目标URL: {target_url}")
+                    try:
+                        page.goto(target_url, timeout=self.timeout)
+                        logger.info("目标URL访问成功")
+                        page.wait_for_timeout(5000)
+                    except Exception as goto_error:
+                        logger.error(f"访问目标URL失败: {goto_error}", exc_info=True)
+                        raise
+                    
+                    # 爬取帖子（参考playwright_test_db_with_download_person.py的逻辑）
+                    topic_set = set()
+                    has_new = True
+                    post_count = 0
+                    
+                    while has_new and post_count < max_posts:
+                        has_new = False
+                        section_list = page.locator("section").all()
+                        
+                        for section in section_list:
+                            if post_count >= max_posts:
+                                break
+                            
+                            # 判断这个section是不是合法的section，如果div下面没有a标签就不是合法的section
+                            if section.locator("div > a").count() == 0:
+                                continue
+                            
+                            # 优化重复的判断，不用点击section，通过section里面a的href属性
+                            href = section.locator("div > a").first.get_attribute('href')
+                            try:
+                                topic_id = re.findall(r'\/explore\/(\w+)', href)[0]
+                            except:
+                                continue
+                            
+                            if topic_id in topic_set:
+                                continue
+                            else:
+                                has_new = True
+                                topic_set.add(topic_id)
+                            
+                            # 点击进入帖子详情
+                            section.click()
+                            page.wait_for_timeout(5000)
+                            
+                            url = page.url
+                            try:
+                                post_id = re.findall(r'\/explore\/(\w+)', url)[0]
+                            except:
+                                page.locator(".close > .reds-icon").click()
+                                continue
+                            
+                            # 检查帖子是否已存在
+                            existing_post = Post.query.filter_by(post_id=post_id).first()
+                            if existing_post:
+                                logger.info(f"帖子已存在，跳过: {post_id}")
+                                page.locator(".close > .reds-icon").click()
+                                continue
+                            
+                            # 爬取帖子数据
+                            try:
+                                result = self._crawl_post_detail(page, post_id, keyword, task_id)
+                                if result:
+                                    stats['posts'] += 1
+                                    stats['comments'] += result.get('comments', 0)
+                                    stats['media'] += result.get('media', 0)
+                                    stats['images'] += result.get('images', 0)
+                                    post_count += 1
+                                    
+                                    # 更新任务进度
+                                    if task_id:
+                                        self._update_task_progress(task_id, post_count, stats)
+                            except Exception as e:
+                                error_msg = f"爬取帖子失败 {post_id}: {str(e)}"
+                                logger.error(error_msg, exc_info=True)
+                                stats['errors'].append(error_msg)
+                            
+                            # 关闭详情页
+                            page.locator(".close > .reds-icon").click()
+                            page.wait_for_timeout(2000)
+                    
+                    logger.info(f"爬取完成，统计: {stats}")
+                    return {
+                        'success': True,
+                        'message': '爬取完成',
+                        'stats': stats
+                    }
+                    
+                except Exception as e:
+                    error_msg = f"爬取过程出错: {str(e)}"
+                    logger.error(error_msg, exc_info=True)
+                    stats['errors'].append(error_msg)
+                    return {
+                        'success': False,
+                        'message': error_msg,
+                        'stats': stats
+                    }
+                finally:
+                    # 确保浏览器被正确关闭
+                    try:
+                        if page:
+                            logger.info("关闭页面...")
+                            page.close()
+                        if context:
+                            logger.info("关闭上下文...")
+                            context.close()
+                        if browser:
+                            logger.info("关闭浏览器...")
+                            browser.close()
+                    except Exception as close_error:
+                        logger.error(f"关闭浏览器时出错: {close_error}", exc_info=True)
+                    
+        except Exception as e:
+            error_msg = f"Playwright执行失败: {str(e)}"
+            logger.critical(error_msg, exc_info=True)
+            stats['errors'].append(error_msg)
+            return {
+                'success': False,
+                'message': error_msg,
+                'stats': stats
+            }
+    
     def _update_task_progress(self, task_id, post_count, stats):
         """更新任务进度"""
         try:

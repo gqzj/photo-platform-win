@@ -29,28 +29,39 @@ class CrawlerTask(db.Model):
     
     def to_dict(self):
         import json
-        result = {
-            'id': self.id,
-            'name': self.name,
-            'platform': self.platform,
-            'task_type': self.task_type,
-            'target_url': self.target_url or '',
-            'cookie_id': self.cookie_id,
-            'status': self.status,
-            'config_json': self.config_json,
-            'keywords_json': self.keywords_json,
-            'tags_json': self.tags_json,
-            'progress_json': self.progress_json,
-            'note': self.note or '',
-            'last_error': self.last_error or '',
-            'current_keyword': self.current_keyword or '',
-            'processed_posts': self.processed_posts,
-            'processed_comments': self.processed_comments,
-            'downloaded_media': self.downloaded_media,
-            'started_at': self.started_at.strftime('%Y-%m-%d %H:%M:%S') if self.started_at else None,
-            'finished_at': self.finished_at.strftime('%Y-%m-%d %H:%M:%S') if self.finished_at else None,
-            'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S') if self.created_at else None,
-            'updated_at': self.updated_at.strftime('%Y-%m-%d %H:%M:%S') if self.updated_at else None
-        }
-        return result
+        try:
+            result = {
+                'id': self.id,
+                'name': self.name or '',
+                'platform': self.platform or '',
+                'task_type': self.task_type or 'keyword',
+                'target_url': self.target_url or '',
+                'cookie_id': self.cookie_id,
+                'status': self.status or 'pending',
+                'config_json': self.config_json,
+                'keywords_json': self.keywords_json,
+                'tags_json': self.tags_json,
+                'progress_json': self.progress_json,
+                'note': self.note or '',
+                'last_error': self.last_error or '',
+                'current_keyword': self.current_keyword or '',
+                'processed_posts': self.processed_posts or 0,
+                'processed_comments': self.processed_comments or 0,
+                'downloaded_media': self.downloaded_media or 0,
+                'started_at': self.started_at.strftime('%Y-%m-%d %H:%M:%S') if self.started_at else None,
+                'finished_at': self.finished_at.strftime('%Y-%m-%d %H:%M:%S') if self.finished_at else None,
+                'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S') if self.created_at else None,
+                'updated_at': self.updated_at.strftime('%Y-%m-%d %H:%M:%S') if self.updated_at else None
+            }
+            return result
+        except Exception as e:
+            # 如果序列化失败，返回基本信息
+            return {
+                'id': self.id,
+                'name': str(self.name) if self.name else '',
+                'platform': str(self.platform) if self.platform else '',
+                'task_type': str(self.task_type) if self.task_type else 'keyword',
+                'status': str(self.status) if self.status else 'pending',
+                'error': f'序列化错误: {str(e)}'
+            }
 

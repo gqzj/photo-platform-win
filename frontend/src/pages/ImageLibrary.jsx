@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
-import { Card, Input, Select, Row, Col, Pagination, Tag, Image, Empty, Spin, message } from 'antd'
-import { SearchOutlined, FilterOutlined } from '@ant-design/icons'
+import { Card, Input, Select, Row, Col, Pagination, Tag, Image, Empty, Spin, message, Button } from 'antd'
+import { SearchOutlined, FilterOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons'
 import { useSearchParams } from 'react-router-dom'
 import api from '../services/api'
 import dayjs from 'dayjs'
@@ -22,6 +22,9 @@ const ImageLibrary = () => {
     source_site: '',
     tag: ''
   })
+  const [previewVisible, setPreviewVisible] = useState(false)
+  const [previewIndex, setPreviewIndex] = useState(-1) // 当前预览的图片索引，-1表示未预览
+  const [pendingPageChange, setPendingPageChange] = useState(null) // 待处理的翻页信息 {direction: 'prev'|'next'}
 
   // 从URL参数初始化关键字
   useEffect(() => {
@@ -34,6 +37,92 @@ const ImageLibrary = () => {
   useEffect(() => {
     fetchData()
   }, [pagination.current, pagination.pageSize, filters])
+
+  // 数据加载完成后，处理待处理的翻页
+  useEffect(() => {
+    if (images.length > 0 && pendingPageChange) {
+      const { direction } = pendingPageChange
+      if (direction === 'prev') {
+        // 翻到上一页后，预览最后一张
+        setPreviewIndex(images.length - 1)
+      } else if (direction === 'next') {
+        // 翻到下一页后，预览第一张
+        setPreviewIndex(0)
+      }
+      setPreviewVisible(true)
+      setPendingPageChange(null)
+    }
+  }, [images, pendingPageChange])
+
+  // 键盘事件监听
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // 只在预览模式下响应键盘事件
+      if (!previewVisible || previewIndex === -1) return
+      
+      // 检查是否按下了左右键
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault()
+        e.stopPropagation()
+        
+        if (e.key === 'ArrowLeft') {
+          handlePreviousImage()
+        } else if (e.key === 'ArrowRight') {
+          handleNextImage()
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [previewVisible, previewIndex, images, pagination])
+
+  // 处理上一张图片
+  const handlePreviousImage = () => {
+    if (previewIndex <= 0) {
+      // 已经是第一张，尝试翻到上一页
+      if (pagination.current > 1) {
+        setPreviewVisible(false)
+        setPendingPageChange({ direction: 'prev' })
+        setPagination(prev => ({
+          ...prev,
+          current: prev.current - 1
+        }))
+      }
+      return
+    }
+    
+    // 切换到上一张
+    setPreviewIndex(previewIndex - 1)
+  }
+
+  // 处理下一张图片
+  const handleNextImage = () => {
+    if (previewIndex >= images.length - 1) {
+      // 已经是最后一张，尝试翻到下一页
+      const totalPages = Math.ceil(pagination.total / pagination.pageSize)
+      if (pagination.current < totalPages) {
+        setPreviewVisible(false)
+        setPendingPageChange({ direction: 'next' })
+        setPagination(prev => ({
+          ...prev,
+          current: prev.current + 1
+        }))
+      }
+      return
+    }
+    
+    // 切换到下一张
+    setPreviewIndex(previewIndex + 1)
+  }
+
+  // 打开预览
+  const handlePreview = (index) => {
+    setPreviewIndex(index)
+    setPreviewVisible(true)
+  }
 
   const fetchData = async () => {
     setLoading(true)
@@ -132,6 +221,47 @@ const ImageLibrary = () => {
 
   return (
     <div>
+      {/* 预览箭头按钮 */}
+      {previewVisible && previewIndex >= 0 && (
+        <>
+          {/* 左箭头 */}
+          {(previewIndex > 0 || pagination.current > 1) && (
+            <Button
+              type="primary"
+              shape="circle"
+              icon={<LeftOutlined />}
+              size="large"
+              style={{
+                position: 'fixed',
+                left: '50px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                zIndex: 1001,
+                boxShadow: '0 2px 8px rgba(0,0,0,0.15)'
+              }}
+              onClick={handlePreviousImage}
+            />
+          )}
+          {/* 右箭头 */}
+          {(previewIndex < images.length - 1 || pagination.current < Math.ceil(pagination.total / pagination.pageSize)) && (
+            <Button
+              type="primary"
+              shape="circle"
+              icon={<RightOutlined />}
+              size="large"
+              style={{
+                position: 'fixed',
+                right: '50px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                zIndex: 1001,
+                boxShadow: '0 2px 8px rgba(0,0,0,0.15)'
+              }}
+              onClick={handleNextImage}
+            />
+          )}
+        </>
+      )}
       <Card
         title="图片库"
         extra={
@@ -196,10 +326,25 @@ const ImageLibrary = () => {
                                 style={{ 
                                   width: '100%', 
                                   height: '100%', 
-                                  objectFit: 'cover' 
+                                  objectFit: 'cover',
+                                  cursor: 'pointer'
                                 }}
                                 preview={{
+                                  visible: previewVisible && previewIndex === images.findIndex(img => img.id === image.id),
+                                  onVisibleChange: (visible) => {
+                                    if (!visible) {
+                                      setPreviewVisible(false)
+                                      setPreviewIndex(-1)
+                                    }
+                                  },
+                                  src: previewVisible && previewIndex >= 0 && previewIndex < images.length 
+                                    ? getImageUrl(images[previewIndex]) 
+                                    : imageUrl,
                                   mask: '预览'
+                                }}
+                                onClick={() => {
+                                  const index = images.findIndex(img => img.id === image.id)
+                                  handlePreview(index)
                                 }}
                                 onError={() => {
                                   console.error(`图片加载失败 (ID: ${image.id}):`, imageUrl)
