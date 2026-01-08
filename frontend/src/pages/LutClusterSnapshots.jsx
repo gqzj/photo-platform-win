@@ -12,9 +12,11 @@ import {
   Col,
   Image,
   Pagination,
-  Empty
+  Empty,
+  Spin,
+  Popconfirm
 } from 'antd'
-import { EyeOutlined, ReloadOutlined } from '@ant-design/icons'
+import { EyeOutlined, ReloadOutlined, DeleteOutlined } from '@ant-design/icons'
 import api from '../services/api'
 
 const { Title, Text } = Typography
@@ -29,6 +31,15 @@ const LutClusterSnapshots = () => {
   })
   const [previewModalVisible, setPreviewModalVisible] = useState(false)
   const [previewSnapshot, setPreviewSnapshot] = useState(null)
+  const [clusterFilesModalVisible, setClusterFilesModalVisible] = useState(false)
+  const [selectedClusterId, setSelectedClusterId] = useState(null)
+  const [clusterFiles, setClusterFiles] = useState([])
+  const [clusterFilesLoading, setClusterFilesLoading] = useState(false)
+  const [clusterFilesPagination, setClusterFilesPagination] = useState({
+    current: 1,
+    pageSize: 20,
+    total: 0
+  })
 
   useEffect(() => {
     fetchSnapshots()
@@ -77,6 +88,65 @@ const LutClusterSnapshots = () => {
     setPagination({ ...pagination, current: page })
   }
 
+  const handleDelete = async (snapshot) => {
+    try {
+      const response = await api.delete(`/lut-files/cluster/snapshot/${snapshot.id}`)
+      if (response.code === 200) {
+        message.success('删除成功')
+        // 刷新列表
+        await fetchSnapshots()
+        // 如果删除的是当前预览的快照，关闭预览
+        if (previewSnapshot && previewSnapshot.id === snapshot.id) {
+          setPreviewModalVisible(false)
+          setPreviewSnapshot(null)
+        }
+      } else {
+        message.error(response.message || '删除失败')
+      }
+    } catch (error) {
+      message.error('删除失败：' + (error.response?.data?.message || error.message))
+    }
+  }
+
+  const handleClusterClick = async (clusterId) => {
+    setSelectedClusterId(clusterId)
+    setClusterFilesModalVisible(true)
+    await fetchClusterFiles(clusterId, 1)
+  }
+
+  const fetchClusterFiles = async (clusterId, page = 1) => {
+    setClusterFilesLoading(true)
+    try {
+      // clusterId可能是字符串（如"1-4"）或数字
+      const clusterIdStr = typeof clusterId === 'string' ? clusterId : clusterId.toString()
+      const response = await api.get(`/lut-files/cluster/${clusterIdStr}/files`, {
+        params: {
+          page: page,
+          page_size: clusterFilesPagination.pageSize
+        }
+      })
+
+      if (response.code === 200) {
+        setClusterFiles(response.data.list || [])
+        setClusterFilesPagination({
+          ...clusterFilesPagination,
+          current: response.data.page,
+          total: response.data.total
+        })
+      } else {
+        message.error(response.message || '获取文件列表失败')
+      }
+    } catch (error) {
+      message.error('获取文件列表失败：' + (error.response?.data?.message || error.message))
+    } finally {
+      setClusterFilesLoading(false)
+    }
+  }
+
+  const handleClusterFilesPageChange = (page) => {
+    fetchClusterFiles(selectedClusterId, page)
+  }
+
   const columns = [
     {
       title: 'ID',
@@ -117,15 +187,32 @@ const LutClusterSnapshots = () => {
     {
       title: '操作',
       key: 'action',
-      width: 120,
+      width: 180,
       render: (_, record) => (
-        <Button
-          type="link"
-          icon={<EyeOutlined />}
-          onClick={() => handlePreview(record)}
-        >
-          查看
-        </Button>
+        <Space>
+          <Button
+            type="link"
+            icon={<EyeOutlined />}
+            onClick={() => handlePreview(record)}
+          >
+            查看
+          </Button>
+          <Popconfirm
+            title="确定要删除这个快照吗？"
+            description="删除后无法恢复"
+            onConfirm={() => handleDelete(record)}
+            okText="确定"
+            cancelText="取消"
+          >
+            <Button
+              type="link"
+              danger
+              icon={<DeleteOutlined />}
+            >
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
       )
     }
   ]
@@ -214,55 +301,22 @@ const LutClusterSnapshots = () => {
                         <Card
                           title={`聚类 ${clusterId}`}
                           size="small"
-                          style={{ height: '100%' }}
+                          style={{ 
+                            height: '100%',
+                            cursor: 'pointer'
+                          }}
+                          hoverable
+                          onClick={() => handleClusterClick(clusterId)}
                         >
                           <div style={{ marginBottom: 8 }}>
                             <Text strong>文件数：</Text>
                             <Text>{clusterInfo.file_count || 0}</Text>
                           </div>
-                          {clusterInfo.files && clusterInfo.files.length > 0 && (
-                            <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
-                              <Row gutter={[8, 8]}>
-                                {clusterInfo.files.slice(0, 20).map((file) => (
-                                  <Col span={12} key={file.id}>
-                                    <Card
-                                      size="small"
-                                      bodyStyle={{ padding: '8px' }}
-                                      cover={
-                                        file.thumbnail_path ? (
-                                          <Image
-                                            src={`/api/lut-files/${file.id}/thumbnail`}
-                                            alt={file.original_filename}
-                                            style={{ height: '80px', objectFit: 'cover' }}
-                                            preview={false}
-                                          />
-                                        ) : (
-                                          <div style={{ height: '80px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#f5f5f5' }}>
-                                            <Text type="secondary" style={{ fontSize: '12px' }}>无缩略图</Text>
-                                          </div>
-                                        )
-                                      }
-                                    >
-                                      <Text
-                                        ellipsis
-                                        style={{ fontSize: '11px' }}
-                                        title={file.original_filename}
-                                      >
-                                        {file.original_filename}
-                                      </Text>
-                                    </Card>
-                                  </Col>
-                                ))}
-                              </Row>
-                              {clusterInfo.files.length > 20 && (
-                                <div style={{ marginTop: 8, textAlign: 'center' }}>
-                                  <Text type="secondary" style={{ fontSize: '12px' }}>
-                                    还有 {clusterInfo.files.length - 20} 个文件...
-                                  </Text>
-                                </div>
-                              )}
-                            </div>
-                          )}
+                          <div style={{ marginTop: 8 }}>
+                            <Text type="secondary" style={{ fontSize: '12px' }}>
+                              点击查看文件列表
+                            </Text>
+                          </div>
                         </Card>
                       </Col>
                     ))}
@@ -272,6 +326,144 @@ const LutClusterSnapshots = () => {
             </Space>
           </div>
         )}
+      </Modal>
+
+      {/* 聚类文件列表模态框 */}
+      <Modal
+        title={`聚类 ${selectedClusterId} 的文件列表`}
+        open={clusterFilesModalVisible}
+        onCancel={() => {
+          setClusterFilesModalVisible(false)
+          setSelectedClusterId(null)
+          setClusterFiles([])
+        }}
+        footer={null}
+        width={1200}
+      >
+        <Spin spinning={clusterFilesLoading}>
+          {clusterFiles.length > 0 ? (
+            <>
+              <Row gutter={[16, 16]}>
+                {clusterFiles.map((file) => (
+                  <Col xs={12} sm={8} md={6} lg={4} xl={4} key={file.id}>
+                    <Card
+                      hoverable
+                      style={{
+                        height: '100%',
+                        display: 'flex',
+                        flexDirection: 'column'
+                      }}
+                      bodyStyle={{
+                        padding: '12px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        flex: 1
+                      }}
+                      cover={
+                        file.thumbnail_path ? (
+                          <div style={{ 
+                            width: '100%', 
+                            height: '200px', 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            justifyContent: 'center',
+                            backgroundColor: '#f5f5f5',
+                            overflow: 'hidden'
+                          }}>
+                            <Image
+                              src={`/api/lut-files/${file.id}/thumbnail`}
+                              alt={file.original_filename}
+                              style={{ 
+                                width: '100%', 
+                                height: '100%', 
+                                objectFit: 'cover' 
+                              }}
+                              preview={false}
+                            />
+                          </div>
+                        ) : (
+                          <div style={{ 
+                            width: '100%', 
+                            height: '200px', 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            justifyContent: 'center',
+                            backgroundColor: '#f5f5f5',
+                            color: '#999'
+                          }}>
+                            无缩略图
+                          </div>
+                        )
+                      }
+                    >
+                      <div style={{ flex: 1 }}>
+                        <Typography.Text
+                          strong
+                          ellipsis
+                          style={{
+                            display: 'block',
+                            marginBottom: '8px',
+                            fontSize: '13px'
+                          }}
+                          title={file.original_filename}
+                        >
+                          {file.original_filename}
+                        </Typography.Text>
+                        <div style={{ marginBottom: '8px' }}>
+                          <Text type="secondary" style={{ fontSize: '11px' }}>
+                            ID: {file.id}
+                          </Text>
+                        </div>
+                        {file.category_name && (
+                          <div style={{ marginBottom: '8px' }}>
+                            <Text type="secondary" style={{ fontSize: '12px' }}>
+                              {file.category_name}
+                            </Text>
+                          </div>
+                        )}
+                        {file.tag && (
+                          <div style={{ marginBottom: '8px' }}>
+                            <Space size={[4, 4]} wrap>
+                              {file.tag.tone && (
+                                <Tag color="orange" style={{ fontSize: '11px', margin: 0 }}>
+                                  {file.tag.tone}
+                                </Tag>
+                              )}
+                              {file.tag.saturation && (
+                                <Tag color="blue" style={{ fontSize: '11px', margin: 0 }}>
+                                  {file.tag.saturation}
+                                </Tag>
+                              )}
+                              {file.tag.contrast && (
+                                <Tag color="purple" style={{ fontSize: '11px', margin: 0 }}>
+                                  {file.tag.contrast}
+                                </Tag>
+                              )}
+                            </Space>
+                          </div>
+                        )}
+                      </div>
+                    </Card>
+                  </Col>
+                ))}
+              </Row>
+              {clusterFilesPagination.total > clusterFilesPagination.pageSize && (
+                <div style={{ marginTop: '24px', textAlign: 'center' }}>
+                  <Pagination
+                    current={clusterFilesPagination.current}
+                    pageSize={clusterFilesPagination.pageSize}
+                    total={clusterFilesPagination.total}
+                    onChange={handleClusterFilesPageChange}
+                    showTotal={(total) => `共 ${total} 条`}
+                    showSizeChanger={false}
+                  />
+                </div>
+              )}
+            </>
+          ) : (
+            <Empty description="该聚类暂无文件" />
+          )}
+        </Spin>
       </Modal>
     </div>
   )

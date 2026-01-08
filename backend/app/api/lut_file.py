@@ -1010,6 +1010,10 @@ def cluster_lut_files():
         if len(lut_files) < n_clusters:
             return jsonify({'code': 400, 'message': f'LUT文件数量({len(lut_files)})少于聚类数({n_clusters})'}), 400
         
+        # 在执行聚类前，先清除旧的聚类结果，确保结果的总聚类数和用户期望的数一致
+        LutCluster.query.delete()
+        db.session.commit()
+        
         # 提取所有LUT文件的特征
         analysis_service = LutAnalysisService()
         storage_dir = get_lut_storage_dir()
@@ -1309,10 +1313,6 @@ def cluster_lut_files():
                             file_distances[file_id] = None
         # 对于 image_similarity 和 ssim 方法，距离已在上面计算
         
-        # 删除旧的聚类结果
-        LutCluster.query.delete()
-        db.session.commit()
-        
         # 保存聚类结果（包含距离）
         cluster_records = []
         for file_id, cluster_id in zip(file_ids, cluster_labels):
@@ -1335,6 +1335,29 @@ def cluster_lut_files():
             cluster_stats[cluster_id] += 1
         
         current_app.logger.info(f"聚类完成: {len(cluster_records)} 个文件分为 {n_clusters} 个聚类（使用{metric_name}指标和{algorithm_name}算法）")
+        
+        # 自动创建一个默认快照，用于存储当前聚类配置
+        # 这样统计接口就能获取到指标和算法信息
+        # 每次执行聚类都创建新快照，确保统计接口能获取到最新的配置
+        try:
+            # 创建默认快照（不包含详细数据，只存储配置信息）
+            default_snapshot = LutClusterSnapshot(
+                name=f'自动快照_{datetime.now().strftime("%Y%m%d_%H%M%S")}',
+                description='聚类时自动创建的配置快照',
+                metric=metric,
+                metric_name=metric_name,
+                algorithm=algorithm,
+                algorithm_name=algorithm_name,
+                n_clusters=n_clusters,
+                cluster_data_json=None  # 不存储详细数据，节省空间
+            )
+            db.session.add(default_snapshot)
+            db.session.commit()
+            current_app.logger.info(f"自动创建配置快照: {metric_name} + {algorithm_name}")
+        except Exception as snapshot_error:
+            # 如果创建快照失败，记录警告但不影响主流程
+            current_app.logger.warning(f"自动创建配置快照失败: {snapshot_error}")
+            db.session.rollback()
         
         return jsonify({
             'code': 200,
@@ -1366,13 +1389,15 @@ def get_cluster_stats():
         
         # 检查表是否存在
         try:
-            # 只统计未蒸馏的文件
+            # 只统计未蒸馏的文件，支持层级聚类
+            # 对于子聚类，使用parent_cluster_id-cluster_id格式作为显示ID
             stats = db.session.query(
                 LutCluster.cluster_id,
+                LutCluster.parent_cluster_id,
                 func.count(LutCluster.id).label('file_count')
             ).filter(
                 LutCluster.distilled == False
-            ).group_by(LutCluster.cluster_id).all()
+            ).group_by(LutCluster.cluster_id, LutCluster.parent_cluster_id).all()
         except Exception as query_error:
             # 如果查询失败，可能是表不存在或没有数据
             current_app.logger.warning(f"查询聚类统计失败: {query_error}")
@@ -1383,21 +1408,95 @@ def get_cluster_stats():
                 'data': {
                     'total_clusters': 0,
                     'total_files': 0,
-                    'cluster_stats': {}
+                    'cluster_stats': {},
+                    'metric': None,
+                    'metric_name': None,
+                    'algorithm': None,
+                    'algorithm_name': None
                 }
             })
         
         # 处理查询结果
         cluster_stats = {}
         total_files = 0
+        
+        # 辅助函数：递归构建完整的聚类显示ID
+        def build_display_id(cluster_id, parent_cluster_id, visited=None):
+            """递归构建完整的聚类显示ID（支持多级子聚类）"""
+            if visited is None:
+                visited = set()
+            
+            if parent_cluster_id is None:
+                return str(cluster_id)
+            
+            # 防止循环引用
+            key = (cluster_id, parent_cluster_id)
+            if key in visited:
+                return str(cluster_id)
+            visited.add(key)
+            
+            # 查找父聚类的信息
+            parent_stat = None
+            for stat in stats:
+                stat_cluster_id = stat.cluster_id if hasattr(stat, 'cluster_id') else stat[0]
+                stat_parent_id = stat.parent_cluster_id if hasattr(stat, 'parent_cluster_id') else (stat[1] if len(stat) > 1 else None)
+                if stat_cluster_id == parent_cluster_id:
+                    parent_stat = stat
+                    break
+            
+            if parent_stat:
+                parent_parent_id = parent_stat.parent_cluster_id if hasattr(parent_stat, 'parent_cluster_id') else (parent_stat[1] if len(parent_stat) > 1 else None)
+                parent_display = build_display_id(parent_cluster_id, parent_parent_id, visited)
+                return f"{parent_display}-{cluster_id}"
+            else:
+                # 如果找不到父聚类信息，直接使用parent_cluster_id
+                return f"{parent_cluster_id}-{cluster_id}"
+        
         for stat in stats:
             # 兼容不同的访问方式
             cluster_id = stat.cluster_id if hasattr(stat, 'cluster_id') else stat[0]
-            file_count = stat.file_count if hasattr(stat, 'file_count') else stat[1]
-            cluster_stats[str(cluster_id)] = file_count
+            parent_cluster_id = stat.parent_cluster_id if hasattr(stat, 'parent_cluster_id') else (stat[1] if len(stat) > 1 else None)
+            file_count = stat.file_count if hasattr(stat, 'file_count') else stat[2] if len(stat) > 2 else stat[1]
+            
+            # 生成显示用的聚类编号（支持多级子聚类）
+            display_id = build_display_id(cluster_id, parent_cluster_id)
+            
+            cluster_stats[display_id] = file_count
             total_files += file_count
         
         total_clusters = len(stats)
+        
+        # 尝试从最新的快照获取聚类指标和算法信息
+        metric = None
+        metric_name = None
+        algorithm = None
+        algorithm_name = None
+        
+        try:
+            # 获取最新的快照（按创建时间降序）
+            latest_snapshot = LutClusterSnapshot.query.order_by(
+                LutClusterSnapshot.created_at.desc()
+            ).first()
+            
+            if latest_snapshot:
+                metric = latest_snapshot.metric
+                metric_name = latest_snapshot.metric_name
+                algorithm = latest_snapshot.algorithm
+                algorithm_name = latest_snapshot.algorithm_name
+            else:
+                # 如果没有快照，尝试从聚类记录的创建时间推断
+                # 获取最新的聚类记录（按创建时间降序）
+                latest_cluster = LutCluster.query.order_by(
+                    LutCluster.created_at.desc()
+                ).first()
+                
+                if latest_cluster:
+                    # 由于没有存储指标和算法信息，这里无法准确获取
+                    # 但可以提示用户保存快照以查看详细信息
+                    pass
+        except Exception as snapshot_error:
+            # 如果查询快照失败，记录警告但不影响主流程
+            current_app.logger.warning(f"查询最新快照失败: {snapshot_error}")
         
         return jsonify({
             'code': 200,
@@ -1405,7 +1504,11 @@ def get_cluster_stats():
             'data': {
                 'total_clusters': total_clusters,
                 'total_files': total_files,
-                'cluster_stats': cluster_stats
+                'cluster_stats': cluster_stats,
+                'metric': metric,
+                'metric_name': metric_name,
+                'algorithm': algorithm,
+                'algorithm_name': algorithm_name
             }
         })
     except Exception as e:
@@ -1413,9 +1516,67 @@ def get_cluster_stats():
         current_app.logger.error(f"获取聚类统计失败: {error_detail}")
         return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
 
-@bp.route('/cluster/<int:cluster_id>/files', methods=['GET'])
+@bp.route('/cluster/<cluster_id>', methods=['DELETE'])
+def delete_cluster(cluster_id):
+    """删除指定聚类
+    支持层级聚类：cluster_id可以是"0"（顶级聚类）或"0-1"（子聚类，格式：父编号-自编号）
+    注意：删除顶级聚类时，不会删除其子聚类
+    """
+    try:
+        # 解析cluster_id
+        if '-' in str(cluster_id):
+            # 子聚类格式：parent_id-cluster_id
+            parts = str(cluster_id).split('-')
+            if len(parts) != 2:
+                return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
+            try:
+                parent_cluster_id = int(parts[0])
+                actual_cluster_id = int(parts[1])
+            except ValueError:
+                return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
+        else:
+            # 顶级聚类
+            try:
+                actual_cluster_id = int(cluster_id)
+                parent_cluster_id = None
+            except ValueError:
+                return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
+        
+        # 删除聚类记录
+        if parent_cluster_id is None:
+            # 删除顶级聚类（不删除其子聚类）
+            deleted_count = LutCluster.query.filter(
+                LutCluster.cluster_id == actual_cluster_id,
+                LutCluster.parent_cluster_id.is_(None)
+            ).delete(synchronize_session=False)
+        else:
+            # 只删除指定的子聚类
+            deleted_count = LutCluster.query.filter(
+                LutCluster.cluster_id == actual_cluster_id,
+                LutCluster.parent_cluster_id == parent_cluster_id
+            ).delete(synchronize_session=False)
+        
+        db.session.commit()
+        
+        return jsonify({
+            'code': 200,
+            'message': '删除成功',
+            'data': {
+                'deleted_count': deleted_count,
+                'cluster_id': str(cluster_id)
+            }
+        })
+    except Exception as e:
+        db.session.rollback()
+        error_detail = traceback.format_exc()
+        current_app.logger.error(f"删除聚类失败: {error_detail}")
+        return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
+
+@bp.route('/cluster/<cluster_id>/files', methods=['GET'])
 def get_cluster_files(cluster_id):
-    """获取指定聚类的LUT文件列表（按与聚类中心的距离排序）"""
+    """获取指定聚类的LUT文件列表（按与聚类中心的距离排序）
+    支持层级聚类：cluster_id可以是"0"（顶级聚类）或"0-1"（子聚类，格式：父编号-自编号）
+    """
     try:
         page = request.args.get('page', 1, type=int)
         page_size = request.args.get('page_size', 20, type=int)
@@ -1426,16 +1587,40 @@ def get_cluster_files(cluster_id):
         from sklearn.preprocessing import StandardScaler
         from sklearn.metrics import pairwise_distances
         
-        # 查询指定聚类的所有LUT文件（排除已蒸馏的文件）
-        all_files = LutFile.query.join(LutCluster).filter(
-            LutCluster.cluster_id == cluster_id,
-            LutCluster.distilled == False
-        ).options(
-            joinedload(LutFile.category),
-            joinedload(LutFile.tags)
-        ).all()
+        # 解析cluster_id，支持层级聚类格式（父编号-自编号）
+        parent_cluster_id = None
+        actual_cluster_id = None
         
-        total = len(all_files)
+        if '-' in str(cluster_id):
+            # 子聚类格式：父编号-自编号
+            parts = str(cluster_id).split('-')
+            if len(parts) == 2:
+                parent_cluster_id = int(parts[0])
+                actual_cluster_id = int(parts[1])
+            else:
+                return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
+        else:
+            # 顶级聚类
+            actual_cluster_id = int(cluster_id)
+        
+        # 查询指定聚类的所有LUT文件（排除已蒸馏的文件）
+        # 先获取唯一的文件ID列表，避免重复记录
+        from sqlalchemy import distinct
+        cluster_query = db.session.query(distinct(LutCluster.lut_file_id)).filter(
+            LutCluster.cluster_id == actual_cluster_id,
+            LutCluster.distilled == False
+        )
+        
+        # 如果是子聚类，需要匹配parent_cluster_id
+        if parent_cluster_id is not None:
+            cluster_query = cluster_query.filter(LutCluster.parent_cluster_id == parent_cluster_id)
+        else:
+            # 顶级聚类，parent_cluster_id应该为NULL
+            cluster_query = cluster_query.filter(LutCluster.parent_cluster_id.is_(None))
+        
+        # 获取唯一的文件ID列表
+        file_ids = [row[0] for row in cluster_query.all()]
+        total = len(file_ids)
         
         if total == 0:
             return jsonify({
@@ -1446,34 +1631,78 @@ def get_cluster_files(cluster_id):
                     'total': 0,
                     'page': page,
                     'page_size': page_size,
-                    'cluster_id': cluster_id
+                    'cluster_id': str(cluster_id)
                 }
             })
         
         # 如果需要按距离排序，使用数据库中存储的距离
         if sort_by_distance:
-            # 使用JOIN查询，按distance_to_center排序
-            # MySQL不支持NULLS LAST，使用CASE表达式将NULL值排序到最后
+            # 使用子查询获取文件ID和距离，然后按距离排序
             from sqlalchemy import case, func
-            query_with_distance = LutFile.query.join(LutCluster).filter(
-                LutCluster.cluster_id == cluster_id,
+            cluster_with_distance = db.session.query(
+                LutCluster.lut_file_id,
+                LutCluster.distance_to_center
+            ).filter(
+                LutCluster.cluster_id == actual_cluster_id,
                 LutCluster.distilled == False
+            )
+            
+            # 如果是子聚类，需要匹配parent_cluster_id
+            if parent_cluster_id is not None:
+                cluster_with_distance = cluster_with_distance.filter(LutCluster.parent_cluster_id == parent_cluster_id)
+            else:
+                cluster_with_distance = cluster_with_distance.filter(LutCluster.parent_cluster_id.is_(None))
+            
+            # 对于每个文件，如果有多个记录，取距离最小的那个（或第一个非NULL的）
+            # 使用GROUP BY获取每个文件的最小距离
+            from sqlalchemy import select, and_
+            distance_subquery = select(
+                LutCluster.lut_file_id,
+                func.min(
+                    case(
+                        (LutCluster.distance_to_center.is_(None), 999999),
+                        else_=LutCluster.distance_to_center
+                    )
+                ).label('min_distance')
+            ).where(
+                and_(
+                    LutCluster.cluster_id == actual_cluster_id,
+                    LutCluster.distilled == False,
+                    LutCluster.parent_cluster_id == parent_cluster_id if parent_cluster_id is not None else LutCluster.parent_cluster_id.is_(None)
+                )
+            ).group_by(LutCluster.lut_file_id).subquery()
+            
+            # 获取排序后的文件ID列表
+            ordered_file_ids = db.session.query(distance_subquery.c.lut_file_id).order_by(
+                distance_subquery.c.min_distance.asc()
+            ).offset((page - 1) * page_size).limit(page_size).all()
+            
+            ordered_file_ids_list = [row[0] for row in ordered_file_ids]
+            
+            # 根据排序后的文件ID列表查询文件详情
+            files = LutFile.query.filter(
+                LutFile.id.in_(ordered_file_ids_list)
             ).options(
                 joinedload(LutFile.category),
                 joinedload(LutFile.tags)
-            ).order_by(
-                case(
-                    (LutCluster.distance_to_center.is_(None), 1),
-                    else_=0
-                ),
-                LutCluster.distance_to_center.asc()  # NULL值通过CASE表达式排在最后
-            )
+            ).all()
             
-            total = query_with_distance.count()
-            files = query_with_distance.offset((page - 1) * page_size).limit(page_size).all()
+            # 按照ordered_file_ids_list的顺序排序
+            file_dict = {f.id: f for f in files}
+            files = [file_dict[fid] for fid in ordered_file_ids_list if fid in file_dict]
         else:
-            # 不按距离排序，使用原始顺序
-            files = all_files[(page - 1) * page_size:page * page_size]
+            # 不按距离排序，使用文件ID列表查询
+            page_file_ids = file_ids[(page - 1) * page_size:page * page_size]
+            files = LutFile.query.filter(
+                LutFile.id.in_(page_file_ids)
+            ).options(
+                joinedload(LutFile.category),
+                joinedload(LutFile.tags)
+            ).all()
+            
+            # 保持原始顺序
+            file_dict = {f.id: f for f in files}
+            files = [file_dict[fid] for fid in page_file_ids if fid in file_dict]
         
         # 构建返回数据
         result_list = []
@@ -1491,11 +1720,11 @@ def get_cluster_files(cluster_id):
             'data': {
                 'list': result_list,
                 'total': total,
-                'page': page,
-                'page_size': page_size,
-                'cluster_id': cluster_id
-            }
-        })
+                    'page': page,
+                    'page_size': page_size,
+                    'cluster_id': str(cluster_id)
+                }
+            })
     except Exception as e:
         error_detail = traceback.format_exc()
         current_app.logger.error(f"获取聚类文件列表失败: {error_detail}")
@@ -1559,15 +1788,407 @@ def generate_thumbnail(file_id):
         current_app.logger.error(f"生成LUT文件缩略图失败: {error_detail}")
         return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
 
-@bp.route('/cluster/<int:cluster_id>/distill/<int:lut_file_id>', methods=['POST'])
-def distill_lut_file(cluster_id, lut_file_id):
-    """蒸馏LUT文件（标记为已蒸馏，不再显示在聚类中）"""
+@bp.route('/cluster/<parent_cluster_id>/recluster', methods=['POST'])
+def recluster_cluster(parent_cluster_id):
+    """对指定聚类进行再次聚类（子聚类）
+    支持层级聚类：parent_cluster_id可以是"0"（顶级聚类）或"0-1"（子聚类，格式：父编号-自编号）
+    """
     try:
+        data = request.get_json() or {}
+        n_clusters = data.get('n_clusters', 3)  # 默认3个子聚类
+        reuse_images = data.get('reuse_images', True)  # 默认复用已生成的图片
+        
+        if n_clusters < 2:
+            return jsonify({'code': 400, 'message': '聚类数必须大于等于2'}), 400
+        
+        # 解析parent_cluster_id
+        if '-' in str(parent_cluster_id):
+            # 子聚类格式：parent_id-cluster_id
+            parts = str(parent_cluster_id).split('-')
+            if len(parts) != 2:
+                return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
+            try:
+                parent_parent_cluster_id = int(parts[0])
+                actual_parent_cluster_id = int(parts[1])
+            except ValueError:
+                return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
+        else:
+            # 顶级聚类
+            try:
+                actual_parent_cluster_id = int(parent_cluster_id)
+                parent_parent_cluster_id = None
+            except ValueError:
+                return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
+        
+        # 获取父聚类的所有LUT文件（未蒸馏的）
+        if parent_parent_cluster_id is None:
+            # 顶级聚类
+            parent_cluster_files = LutFile.query.join(LutCluster).filter(
+                LutCluster.cluster_id == actual_parent_cluster_id,
+                LutCluster.distilled == False,
+                LutCluster.parent_cluster_id.is_(None)
+            ).distinct().all()
+        else:
+            # 子聚类
+            parent_cluster_files = LutFile.query.join(LutCluster).filter(
+                LutCluster.cluster_id == actual_parent_cluster_id,
+                LutCluster.parent_cluster_id == parent_parent_cluster_id,
+                LutCluster.distilled == False
+            ).distinct().all()
+        
+        if len(parent_cluster_files) < n_clusters:
+            return jsonify({
+                'code': 400,
+                'message': f'父聚类中的LUT文件数量({len(parent_cluster_files)})少于聚类数({n_clusters})'
+            }), 400
+        
+        # 从最新快照获取父聚类使用的指标和算法
+        metric = None
+        algorithm = None
+        metric_name = None
+        algorithm_name = None
+        
+        try:
+            latest_snapshot = LutClusterSnapshot.query.order_by(
+                LutClusterSnapshot.created_at.desc()
+            ).first()
+            
+            if latest_snapshot:
+                metric = latest_snapshot.metric
+                algorithm = latest_snapshot.algorithm
+                metric_name = latest_snapshot.metric_name
+                algorithm_name = latest_snapshot.algorithm_name
+        except Exception as e:
+            current_app.logger.warning(f"获取快照信息失败: {e}")
+        
+        if not metric or not algorithm:
+            return jsonify({
+                'code': 400,
+                'message': '无法获取父聚类的聚类配置信息，请先保存快照或重新执行聚类'
+            }), 400
+        
+        # 验证指标和算法
+        if metric not in ['lightweight_7d', 'image_features', 'image_similarity', 'ssim', 'euclidean']:
+            return jsonify({'code': 400, 'message': f'不支持的聚类指标: {metric}'}), 400
+        
+        if algorithm not in ['kmeans', 'hierarchical']:
+            return jsonify({'code': 400, 'message': f'不支持的聚类算法: {algorithm}'}), 400
+        
+        # 如果是指定指标，必须使用层次聚类
+        if metric in ['image_similarity', 'ssim', 'euclidean'] and algorithm != 'hierarchical':
+            algorithm = 'hierarchical'
+            algorithm_name = '凝聚式层次聚类'
+            current_app.logger.warning(f"指标{metric}只能使用层次聚类，已自动切换")
+        
+        # 提取特征或生成图片（复用主聚类逻辑）
+        analysis_service = LutAnalysisService()
+        storage_dir = get_lut_storage_dir()
+        
+        features_list = []
+        file_ids = []
+        failed_files = []
+        image_paths = []
+        
+        # 如果是图像特征映射、图片相似度、SSIM或欧氏距离方法，需要找到标准测试图
+        standard_image_path = None
+        if metric in ['image_features', 'image_similarity', 'ssim', 'euclidean']:
+            backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            if metric in ['image_similarity', 'ssim', 'euclidean']:
+                standard_image_path = os.path.join(backend_dir, 'lut_standard.png')
+                if not os.path.exists(standard_image_path):
+                    standard_image_path = os.path.join(backend_dir, 'standard.png')
+                    if not os.path.exists(standard_image_path):
+                        return jsonify({'code': 400, 'message': '标准测试图不存在'}), 400
+            else:
+                standard_image_path = os.path.join(backend_dir, 'standard.png')
+                if not os.path.exists(standard_image_path):
+                    standard_image_path = os.path.join(backend_dir, 'lut_standard.png')
+                    if not os.path.exists(standard_image_path):
+                        return jsonify({'code': 400, 'message': '标准测试图不存在'}), 400
+        
+        metric_name_map = {
+            'lightweight_7d': '轻量7维特征',
+            'image_features': '图像特征映射',
+            'image_similarity': '图片相似度',
+            'ssim': 'SSIM（结构相似性）',
+            'euclidean': '像素欧氏距离'
+        }
+        algorithm_name_map = {
+            'kmeans': 'K-Means',
+            'hierarchical': '凝聚式层次聚类'
+        }
+        if not metric_name:
+            metric_name = metric_name_map.get(metric, '未知指标')
+        if not algorithm_name:
+            algorithm_name = algorithm_name_map.get(algorithm, '未知算法')
+        
+        current_app.logger.info(f"开始对父聚类{parent_cluster_id}进行再次聚类: {len(parent_cluster_files)}个文件，分为{n_clusters}个子聚类（使用{metric_name}指标和{algorithm_name}算法）")
+        
+        file_distances = {}
+        
+        # 处理图片相似度、SSIM和欧氏距离方法
+        if metric in ['image_similarity', 'ssim', 'euclidean']:
+            from app.services.lut_application_service import LutApplicationService
+            lut_service = LutApplicationService()
+            cluster_image_dir = get_lut_cluster_image_dir()
+            
+            for lut_file in parent_cluster_files:
+                file_path = os.path.join(storage_dir, lut_file.storage_path.replace('/', os.sep))
+                if not os.path.exists(file_path):
+                    failed_files.append({'id': lut_file.id, 'filename': lut_file.original_filename, 'error': '文件不存在'})
+                    continue
+                
+                try:
+                    output_path = os.path.join(cluster_image_dir, f"lut_cluster_{lut_file.id}.jpg")
+                    
+                    if reuse_images and os.path.exists(output_path):
+                        image_paths.append(output_path)
+                        file_ids.append(lut_file.id)
+                    else:
+                        success, error_msg = lut_service.apply_lut_to_image(
+                            standard_image_path, file_path, output_path
+                        )
+                        if success:
+                            image_paths.append(output_path)
+                            file_ids.append(lut_file.id)
+                        else:
+                            failed_files.append({'id': lut_file.id, 'filename': lut_file.original_filename, 'error': f'应用LUT失败: {error_msg}'})
+                except Exception as e:
+                    failed_files.append({'id': lut_file.id, 'filename': lut_file.original_filename, 'error': str(e)})
+            
+            if len(image_paths) < n_clusters:
+                return jsonify({
+                    'code': 400,
+                    'message': f'成功生成图片的LUT文件数量({len(image_paths)})少于聚类数({n_clusters})'
+                }), 400
+            
+            # 计算距离矩阵并聚类
+            try:
+                if metric == 'ssim':
+                    similarity_matrix = analysis_service.calculate_ssim_similarity_matrix(image_paths)
+                    if similarity_matrix is None:
+                        return jsonify({'code': 500, 'message': '计算相似度矩阵失败'}), 500
+                    distance_matrix = 1 - similarity_matrix
+                elif metric == 'euclidean':
+                    distance_matrix = analysis_service.calculate_euclidean_distance_matrix(image_paths)
+                    if distance_matrix is None:
+                        return jsonify({'code': 500, 'message': '计算欧氏距离矩阵失败'}), 500
+                else:  # image_similarity
+                    similarity_matrix = analysis_service.calculate_image_similarity_matrix(image_paths)
+                    if similarity_matrix is None:
+                        return jsonify({'code': 500, 'message': '计算相似度矩阵失败'}), 500
+                    distance_matrix = 1 - similarity_matrix
+                
+                from sklearn.cluster import AgglomerativeClustering
+                import numpy as np
+                
+                clustering = AgglomerativeClustering(
+                    n_clusters=n_clusters,
+                    linkage='average',
+                    metric='precomputed'
+                )
+                cluster_labels = clustering.fit_predict(distance_matrix)
+                
+                # 计算每个文件到其所属聚类中心的距离
+                for cluster_id in range(n_clusters):
+                    cluster_mask = cluster_labels == cluster_id
+                    cluster_indices = np.where(cluster_mask)[0]
+                    if len(cluster_indices) > 0:
+                        for idx in cluster_indices:
+                            cluster_distances = distance_matrix[idx, cluster_indices]
+                            avg_distance = np.mean(cluster_distances)
+                            file_id = file_ids[idx]
+                            file_distances[file_id] = float(avg_distance)
+            except Exception as e:
+                current_app.logger.error(f"再次聚类失败: {e}")
+                return jsonify({'code': 500, 'message': f'再次聚类失败: {str(e)}'}), 500
+        
+        else:
+            # 其他方法：提取特征向量
+            for lut_file in parent_cluster_files:
+                file_path = os.path.join(storage_dir, lut_file.storage_path.replace('/', os.sep))
+                if not os.path.exists(file_path):
+                    failed_files.append({'id': lut_file.id, 'filename': lut_file.original_filename, 'error': '文件不存在'})
+                    continue
+                
+                try:
+                    if metric == 'lightweight_7d':
+                        features = analysis_service.extract_7d_features(file_path)
+                    else:  # image_features
+                        features = analysis_service.extract_image_features(file_path, standard_image_path)
+                    
+                    if features is not None:
+                        features_list.append(features)
+                        file_ids.append(lut_file.id)
+                    else:
+                        failed_files.append({'id': lut_file.id, 'filename': lut_file.original_filename, 'error': '特征提取失败'})
+                except Exception as e:
+                    failed_files.append({'id': lut_file.id, 'filename': lut_file.original_filename, 'error': str(e)})
+            
+            if len(features_list) < n_clusters:
+                return jsonify({
+                    'code': 400,
+                    'message': f'成功提取特征的LUT文件数量({len(features_list)})少于聚类数({n_clusters})'
+                }), 400
+            
+            # 根据选择的算法进行聚类
+            try:
+                from sklearn.cluster import KMeans, AgglomerativeClustering
+                from sklearn.preprocessing import StandardScaler
+                from sklearn.metrics import pairwise_distances
+                import numpy as np
+                
+                scaler = StandardScaler()
+                features_scaled = scaler.fit_transform(features_list)
+                
+                if algorithm == 'kmeans':
+                    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
+                    cluster_labels = kmeans.fit_predict(features_scaled)
+                    cluster_centers = kmeans.cluster_centers_
+                else:  # hierarchical
+                    distance_matrix = pairwise_distances(features_scaled, metric='euclidean')
+                    clustering = AgglomerativeClustering(
+                        n_clusters=n_clusters,
+                        linkage='average',
+                        metric='precomputed'
+                    )
+                    cluster_labels = clustering.fit_predict(distance_matrix)
+                    cluster_centers = {}
+                    for cluster_id in range(n_clusters):
+                        cluster_mask = cluster_labels == cluster_id
+                        if np.any(cluster_mask):
+                            cluster_centers[cluster_id] = np.mean(features_scaled[cluster_mask], axis=0)
+                
+                # 计算每个文件到其所属聚类中心的距离
+                if algorithm == 'kmeans':
+                    for i, (file_id, cluster_id) in enumerate(zip(file_ids, cluster_labels)):
+                        center = cluster_centers[int(cluster_id)]
+                        distance = np.linalg.norm(features_scaled[i] - center)
+                        file_distances[file_id] = float(distance)
+                else:
+                    for i, (file_id, cluster_id) in enumerate(zip(file_ids, cluster_labels)):
+                        cluster_id_int = int(cluster_id)
+                        if cluster_id_int in cluster_centers:
+                            center = cluster_centers[cluster_id_int]
+                            distance = np.linalg.norm(features_scaled[i] - center)
+                            file_distances[file_id] = float(distance)
+                        else:
+                            cluster_mask = cluster_labels == cluster_id_int
+                            if np.any(cluster_mask):
+                                center = np.mean(features_scaled[cluster_mask], axis=0)
+                                distance = np.linalg.norm(features_scaled[i] - center)
+                                file_distances[file_id] = float(distance)
+            except Exception as e:
+                error_detail = traceback.format_exc()
+                current_app.logger.error(f"再次聚类失败: {error_detail}")
+                return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
+        
+        # 先清除该父聚类的所有子聚类记录，避免重复
+        if parent_parent_cluster_id is None:
+            # 顶级聚类：清除所有parent_cluster_id等于该聚类cluster_id的记录
+            LutCluster.query.filter(
+                LutCluster.parent_cluster_id == actual_parent_cluster_id
+            ).delete()
+        else:
+            # 子聚类：需要找到所有属于该子聚类的记录，然后清除它们的子聚类
+            # 先找到该子聚类的所有记录，然后清除以这些记录的cluster_id为parent_cluster_id的记录
+            # 但这样比较复杂，我们可以直接清除所有parent_cluster_id等于actual_parent_cluster_id且parent_parent_cluster_id等于parent_parent_cluster_id的记录
+            # 实际上，我们需要清除的是：cluster_id=actual_parent_cluster_id, parent_cluster_id=parent_parent_cluster_id的所有子聚类
+            # 但数据库中parent_cluster_id只存储了直接的父聚类ID，所以我们需要找到所有可能的子聚类
+            # 简化方案：清除所有parent_cluster_id等于actual_parent_cluster_id的记录
+            LutCluster.query.filter(
+                LutCluster.parent_cluster_id == actual_parent_cluster_id
+            ).delete()
+        db.session.commit()
+        
+        # 保存子聚类结果
+        # parent_cluster_id应该设置为actual_parent_cluster_id（即父聚类的cluster_id）
+        cluster_records = []
+        for file_id, cluster_id in zip(file_ids, cluster_labels):
+            cluster_record = LutCluster(
+                cluster_id=int(cluster_id),
+                parent_cluster_id=actual_parent_cluster_id,  # 设置父聚类的cluster_id
+                lut_file_id=file_id,
+                distance_to_center=file_distances.get(file_id)
+            )
+            cluster_records.append(cluster_record)
+            db.session.add(cluster_record)
+        
+        db.session.commit()
+        
+        # 统计每个子聚类的文件数量
+        cluster_stats = {}
+        for record in cluster_records:
+            cluster_id = record.cluster_id
+            # 生成显示ID：如果父聚类是顶级，显示为"parent-cluster"，否则显示为"parent_parent-parent-cluster"
+            if parent_parent_cluster_id is None:
+                display_id = f"{actual_parent_cluster_id}-{cluster_id}"
+            else:
+                display_id = f"{parent_parent_cluster_id}-{actual_parent_cluster_id}-{cluster_id}"
+            if display_id not in cluster_stats:
+                cluster_stats[display_id] = 0
+            cluster_stats[display_id] += 1
+        
+        current_app.logger.info(f"再次聚类完成: {len(cluster_records)} 个文件分为 {n_clusters} 个子聚类（父聚类{parent_cluster_id}）")
+        
+        return jsonify({
+            'code': 200,
+            'message': '再次聚类完成',
+            'data': {
+                'parent_cluster_id': parent_cluster_id,
+                'n_clusters': n_clusters,
+                'metric': metric,
+                'metric_name': metric_name,
+                'algorithm': algorithm,
+                'algorithm_name': algorithm_name,
+                'total_files': len(cluster_records),
+                'failed_files': failed_files,
+                'cluster_stats': cluster_stats
+            }
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        error_detail = traceback.format_exc()
+        current_app.logger.error(f"再次聚类失败: {error_detail}")
+        return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
+
+@bp.route('/cluster/<cluster_id>/distill/<int:lut_file_id>', methods=['POST'])
+def distill_lut_file(cluster_id, lut_file_id):
+    """蒸馏LUT文件（标记为已蒸馏，不再显示在聚类中）
+    支持层级聚类：cluster_id可以是"0"（顶级聚类）或"1-4"（子聚类，格式：父编号-自编号）
+    """
+    try:
+        # 解析cluster_id，支持层级聚类格式（父编号-自编号）
+        parent_cluster_id = None
+        actual_cluster_id = None
+        
+        if '-' in str(cluster_id):
+            # 子聚类格式：父编号-自编号
+            parts = str(cluster_id).split('-')
+            if len(parts) == 2:
+                parent_cluster_id = int(parts[0])
+                actual_cluster_id = int(parts[1])
+            else:
+                return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
+        else:
+            # 顶级聚类
+            actual_cluster_id = int(cluster_id)
+        
         # 查找聚类记录
-        cluster_record = LutCluster.query.filter_by(
-            cluster_id=cluster_id,
+        query = LutCluster.query.filter_by(
+            cluster_id=actual_cluster_id,
             lut_file_id=lut_file_id
-        ).first()
+        )
+        
+        # 如果是子聚类，需要匹配parent_cluster_id
+        if parent_cluster_id is not None:
+            query = query.filter(LutCluster.parent_cluster_id == parent_cluster_id)
+        else:
+            # 顶级聚类，parent_cluster_id应该为NULL
+            query = query.filter(LutCluster.parent_cluster_id.is_(None))
+        
+        cluster_record = query.first()
         
         if not cluster_record:
             return jsonify({'code': 404, 'message': '聚类记录不存在'}), 404
@@ -1602,33 +2223,38 @@ def save_cluster_snapshot():
         if not name:
             return jsonify({'code': 400, 'message': '快照名称不能为空'}), 400
         
-        # 获取当前聚类统计信息
+        # 获取当前聚类统计信息（支持层级聚类）
         from sqlalchemy import func
         stats = db.session.query(
             LutCluster.cluster_id,
+            LutCluster.parent_cluster_id,
             func.count(LutCluster.id).label('file_count')
         ).filter(
             LutCluster.distilled == False
-        ).group_by(LutCluster.cluster_id).all()
+        ).group_by(LutCluster.cluster_id, LutCluster.parent_cluster_id).all()
         
         if not stats:
             return jsonify({'code': 400, 'message': '没有可保存的聚类数据'}), 400
         
-        # 获取每个聚类的详细信息
+        # 获取每个聚类的统计信息（不保存详细文件列表，避免数据过大）
         cluster_data = {}
         for stat in stats:
             cluster_id = stat.cluster_id if hasattr(stat, 'cluster_id') else stat[0]
-            file_count = stat.file_count if hasattr(stat, 'file_count') else stat[1]
+            parent_cluster_id = stat.parent_cluster_id if hasattr(stat, 'parent_cluster_id') else (stat[1] if len(stat) > 1 else None)
+            file_count = stat.file_count if hasattr(stat, 'file_count') else (stat[2] if len(stat) > 2 else stat[1])
             
-            # 获取该聚类的文件列表（未蒸馏的）
-            files = LutFile.query.join(LutCluster).filter(
-                LutCluster.cluster_id == cluster_id,
-                LutCluster.distilled == False
-            ).all()
+            # 生成显示用的聚类编号（父编号-自编号格式）
+            if parent_cluster_id is not None:
+                display_id = f"{parent_cluster_id}-{cluster_id}"
+            else:
+                display_id = str(cluster_id)
             
-            cluster_data[str(cluster_id)] = {
+            # 只保存统计信息，不保存详细文件列表
+            # 详细文件列表可以通过查询实时获取，避免数据过大
+            cluster_data[display_id] = {
                 'file_count': file_count,
-                'files': [f.to_dict() for f in files]
+                'cluster_id': cluster_id,
+                'parent_cluster_id': parent_cluster_id
             }
         
         # 创建快照记录
@@ -1696,4 +2322,28 @@ def get_cluster_snapshot(snapshot_id):
     except Exception as e:
         error_detail = traceback.format_exc()
         current_app.logger.error(f"获取聚类快照详情失败: {error_detail}")
+        return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
+
+@bp.route('/cluster/snapshot/<int:snapshot_id>', methods=['DELETE'])
+def delete_cluster_snapshot(snapshot_id):
+    """删除聚类快照"""
+    try:
+        snapshot = LutClusterSnapshot.query.get_or_404(snapshot_id)
+        snapshot_name = snapshot.name
+        
+        db.session.delete(snapshot)
+        db.session.commit()
+        
+        return jsonify({
+            'code': 200,
+            'message': '删除成功',
+            'data': {
+                'snapshot_id': snapshot_id,
+                'snapshot_name': snapshot_name
+            }
+        })
+    except Exception as e:
+        db.session.rollback()
+        error_detail = traceback.format_exc()
+        current_app.logger.error(f"删除聚类快照失败: {error_detail}")
         return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500

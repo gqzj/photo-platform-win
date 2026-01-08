@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import {
   Card,
   Table,
@@ -49,6 +49,7 @@ const LutFileManagement = () => {
   const [filenameStartIndex, setFilenameStartIndex] = useState(undefined)
   const [batchAnalyzeStatus, setBatchAnalyzeStatus] = useState(null)
   const [analyzePollingInterval, setAnalyzePollingInterval] = useState(null)
+  const previousStatusRef = useRef(null) // 用于跟踪上一次的状态，避免重复提示
 
   // 获取分类列表
   const fetchCategories = async () => {
@@ -370,16 +371,32 @@ const LutFileManagement = () => {
     try {
       const response = await api.get('/lut-files/batch-analyze-status')
       if (response.code === 200) {
-        setBatchAnalyzeStatus(response.data)
+        const newStatus = response.data
+        const previousStatus = previousStatusRef.current
+        
         // 如果任务已完成或失败，停止轮询
-        if (response.data && (response.data.status === 'completed' || response.data.status === 'failed')) {
+        if (newStatus && (newStatus.status === 'completed' || newStatus.status === 'failed')) {
           stopAnalyzePolling()
-          if (response.data.status === 'completed') {
-            message.success('批量分析完成')
-            fetchData(pagination.current, pagination.pageSize)
-          } else {
-            message.error('批量分析失败：' + (response.data.error_message || '未知错误'))
+          
+          // 只在状态从非 completed/failed 变为 completed/failed 时才显示提示
+          if (newStatus.status === 'completed') {
+            // 检查是否是首次变为 completed 状态
+            if (previousStatus !== 'completed') {
+              message.success('批量分析完成')
+              fetchData(pagination.current, pagination.pageSize)
+            }
+          } else if (newStatus.status === 'failed') {
+            // 检查是否是首次变为 failed 状态
+            if (previousStatus !== 'failed') {
+              message.error('批量分析失败：' + (newStatus.error_message || '未知错误'))
+            }
           }
+        }
+        
+        // 更新状态和上一次状态的引用
+        setBatchAnalyzeStatus(newStatus)
+        if (newStatus) {
+          previousStatusRef.current = newStatus.status
         }
       }
     } catch (error) {

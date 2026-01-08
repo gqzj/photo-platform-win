@@ -47,6 +47,10 @@ const LutClusterAnalysis = () => {
   const [previewFile, setPreviewFile] = useState(null)
   const [saveSnapshotModalVisible, setSaveSnapshotModalVisible] = useState(false)
   const [snapshotForm] = Form.useForm()
+  const [reclusterModalVisible, setReclusterModalVisible] = useState(false)
+  const [reclusterForm] = Form.useForm()
+  const [reclusteringClusterId, setReclusteringClusterId] = useState(null)
+  const [reclustering, setReclustering] = useState(false)
 
   useEffect(() => {
     fetchClusterStats()
@@ -109,7 +113,9 @@ const LutClusterAnalysis = () => {
   const fetchClusterFiles = async (clusterId, page = 1) => {
     setFilesLoading(true)
     try {
-      const response = await api.get(`/lut-files/cluster/${clusterId}/files`, {
+      // clusterId可能是字符串（如"0-1"）或数字
+      const clusterIdStr = typeof clusterId === 'string' ? clusterId : clusterId.toString()
+      const response = await api.get(`/lut-files/cluster/${clusterIdStr}/files`, {
         params: {
           page: page,
           page_size: filesPagination.pageSize
@@ -160,6 +166,70 @@ const LutClusterAnalysis = () => {
       }
     } catch (error) {
       message.error('蒸馏失败：' + (error.response?.data?.message || error.message))
+    }
+  }
+
+  const handleRecluster = async () => {
+    try {
+      const values = await reclusterForm.validateFields()
+      if (!reclusteringClusterId && reclusteringClusterId !== 0 && reclusteringClusterId !== '0') {
+        message.error('请选择要再次聚类的聚类')
+        return
+      }
+
+      setReclustering(true)
+      try {
+        // 支持子聚类再次聚类，clusterId可能是字符串（如"1-2"）
+        const clusterIdStr = typeof reclusteringClusterId === 'string' ? reclusteringClusterId : reclusteringClusterId.toString()
+        const response = await api.post(`/lut-files/cluster/${clusterIdStr}/recluster`, {
+          n_clusters: values.n_clusters,
+          reuse_images: values.reuse_images !== false
+        })
+
+        if (response.code === 200) {
+          const metricName = response.data?.metric_name || '未知指标'
+          const algorithmName = response.data?.algorithm_name || '未知算法'
+          message.success(`再次聚类完成（使用${metricName}指标和${algorithmName}算法）`)
+          await fetchClusterStats()
+          setReclusterModalVisible(false)
+          setReclusteringClusterId(null)
+          reclusterForm.resetFields()
+          setSelectedClusterId(null)
+          setClusterFiles([])
+        } else {
+          message.error(response.message || '再次聚类失败')
+        }
+      } catch (error) {
+        message.error('再次聚类失败：' + (error.response?.data?.message || error.message))
+      } finally {
+        setReclustering(false)
+      }
+    } catch (error) {
+      if (error.errorFields) {
+        // 表单验证错误
+        return
+      }
+      message.error('再次聚类失败：' + (error.response?.data?.message || error.message))
+    }
+  }
+
+  const handleDeleteCluster = async (clusterId) => {
+    try {
+      const response = await api.delete(`/lut-files/cluster/${clusterId}`)
+      if (response.code === 200) {
+        message.success(`聚类 ${clusterId} 删除成功`)
+        // 刷新统计
+        await fetchClusterStats()
+        // 如果删除的是当前选中的聚类，清空选择
+        if (selectedClusterId === clusterId || selectedClusterId === clusterId.toString()) {
+          setSelectedClusterId(null)
+          setClusterFiles([])
+        }
+      } else {
+        message.error(response.message || '删除失败')
+      }
+    } catch (error) {
+      message.error('删除失败：' + (error.response?.data?.message || error.message))
     }
   }
 
@@ -293,29 +363,108 @@ const LutClusterAnalysis = () => {
                 <Card title="聚类统计" size="small">
                   <Row gutter={[16, 16]}>
                     <Col span={24}>
-                      <Text strong>总聚类数：{clusterStats.total_clusters}</Text>
-                      <Text style={{ marginLeft: 16 }}>总文件数：{clusterStats.total_files}</Text>
+                      <Space direction="vertical" size="small" style={{ width: '100%' }}>
+                        <div>
+                          <Text strong>总聚类数：</Text>
+                          <Text>{clusterStats.total_clusters}</Text>
+                          <Text strong style={{ marginLeft: 16 }}>总文件数：</Text>
+                          <Text>{clusterStats.total_files}</Text>
+                        </div>
+                        <div>
+                          {clusterStats.metric_name ? (
+                            <>
+                              <Text strong>聚类指标：</Text>
+                              <Tag color="blue">{clusterStats.metric_name}</Tag>
+                            </>
+                          ) : (
+                            <>
+                              <Text strong>聚类指标：</Text>
+                              <Text type="secondary">未知（请保存快照以查看详细信息）</Text>
+                            </>
+                          )}
+                          {clusterStats.algorithm_name ? (
+                            <>
+                              <Text strong style={{ marginLeft: 16 }}>聚类算法：</Text>
+                              <Tag color="green">{clusterStats.algorithm_name}</Tag>
+                            </>
+                          ) : (
+                            <>
+                              <Text strong style={{ marginLeft: 16 }}>聚类算法：</Text>
+                              <Text type="secondary">未知（请保存快照以查看详细信息）</Text>
+                            </>
+                          )}
+                        </div>
+                      </Space>
                     </Col>
-                    {Object.entries(clusterStats.cluster_stats || {}).map(([clusterId, count]) => (
-                      <Col xs={12} sm={8} md={6} lg={4} key={clusterId}>
-                        <Card
-                          hoverable
-                          style={{
-                            textAlign: 'center',
-                            cursor: 'pointer',
-                            borderColor: selectedClusterId === parseInt(clusterId) ? '#1890ff' : undefined
-                          }}
-                          onClick={() => setSelectedClusterId(parseInt(clusterId))}
-                        >
-                          <Tag color={getClusterColor(parseInt(clusterId))} style={{ fontSize: 16, padding: '4px 12px' }}>
-                            聚类 {clusterId}
-                          </Tag>
-                          <div style={{ marginTop: 8, fontSize: 18, fontWeight: 'bold' }}>
-                            {count} 个文件
-                          </div>
-                        </Card>
-                      </Col>
-                    ))}
+                    {Object.entries(clusterStats.cluster_stats || {}).map(([clusterId, count]) => {
+                      // 解析clusterId，判断是否为子聚类
+                      const isSubCluster = clusterId.includes('-')
+                      const clusterIdNum = isSubCluster ? parseInt(clusterId.split('-')[0]) : parseInt(clusterId)
+                      const isTopLevel = !isSubCluster
+                      
+                      return (
+                        <Col xs={12} sm={8} md={6} lg={4} key={clusterId}>
+                          <Card
+                            hoverable
+                            style={{
+                              textAlign: 'center',
+                              cursor: 'pointer',
+                              borderColor: selectedClusterId === clusterId || selectedClusterId === clusterId.toString() ? '#1890ff' : undefined
+                            }}
+                            onClick={() => setSelectedClusterId(clusterId)}
+                            actions={[
+                              <Button
+                                key="recluster"
+                                type="link"
+                                size="small"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  // 支持子聚类再次聚类，直接使用clusterId字符串
+                                  setReclusteringClusterId(clusterId)
+                                  reclusterForm.setFieldsValue({ n_clusters: 3, reuse_images: true })
+                                  setReclusterModalVisible(true)
+                                }}
+                                disabled={reclustering}
+                              >
+                                再次聚类
+                              </Button>,
+                              <Popconfirm
+                                key="delete"
+                                title={`确定要删除聚类 ${clusterId} 吗？`}
+                                description="删除后该聚类中的文件将不再显示"
+                                onConfirm={(e) => {
+                                  e?.stopPropagation()
+                                  handleDeleteCluster(clusterId)
+                                }}
+                                onCancel={(e) => {
+                                  e?.stopPropagation()
+                                }}
+                                okText="确定"
+                                cancelText="取消"
+                              >
+                                <Button
+                                  type="link"
+                                  danger
+                                  size="small"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                  }}
+                                >
+                                  删除
+                                </Button>
+                              </Popconfirm>
+                            ]}
+                          >
+                            <Tag color={getClusterColor(clusterIdNum)} style={{ fontSize: 16, padding: '4px 12px' }}>
+                              聚类 {clusterId}
+                            </Tag>
+                            <div style={{ marginTop: 8, fontSize: 18, fontWeight: 'bold' }}>
+                              {count} 个文件
+                            </div>
+                          </Card>
+                        </Col>
+                      )
+                    })}
                   </Row>
                 </Card>
 
@@ -490,10 +639,49 @@ const LutClusterAnalysis = () => {
       >
         {previewFile && (
           <div>
-            <p><Text strong>文件名：</Text>{previewFile.original_filename}</p>
-            <p><Text strong>类别：</Text>{previewFile.category_name || '未分类'}</p>
+            {/* 缩略图 */}
+            {previewFile.thumbnail_path ? (
+              <div style={{ 
+                marginBottom: '24px', 
+                textAlign: 'center',
+                backgroundColor: '#f5f5f5',
+                padding: '20px',
+                borderRadius: '8px'
+              }}>
+                <Image
+                  src={`/api/lut-files/${previewFile.id}/thumbnail`}
+                  alt={previewFile.original_filename}
+                  style={{ 
+                    maxWidth: '100%',
+                    maxHeight: '400px',
+                    objectFit: 'contain'
+                  }}
+                  preview={true}
+                />
+              </div>
+            ) : (
+              <div style={{ 
+                marginBottom: '24px', 
+                textAlign: 'center',
+                backgroundColor: '#f5f5f5',
+                padding: '40px',
+                borderRadius: '8px',
+                color: '#999'
+              }}>
+                无缩略图
+              </div>
+            )}
+            
+            <div style={{ marginBottom: '12px' }}>
+              <Text strong>文件名：</Text>
+              <Text>{previewFile.original_filename}</Text>
+            </div>
+            <div style={{ marginBottom: '12px' }}>
+              <Text strong>类别：</Text>
+              <Text>{previewFile.category_name || '未分类'}</Text>
+            </div>
             {previewFile.tag && (
-              <div>
+              <div style={{ marginBottom: '12px' }}>
                 <Text strong>标签：</Text>
                 <Space style={{ marginLeft: 8 }}>
                   {previewFile.tag.tone && <Tag color="orange">色调: {previewFile.tag.tone}</Tag>}
@@ -532,6 +720,52 @@ const LutClusterAnalysis = () => {
           >
             <TextArea rows={4} placeholder="请输入快照描述（可选）" />
           </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 再次聚类模态框 */}
+      <Modal
+        title={`对聚类 ${typeof reclusteringClusterId === 'string' ? reclusteringClusterId : reclusteringClusterId} 进行再次聚类`}
+        open={reclusterModalVisible}
+        onOk={handleRecluster}
+        onCancel={() => {
+          setReclusterModalVisible(false)
+          setReclusteringClusterId(null)
+          reclusterForm.resetFields()
+        }}
+        okText="开始聚类"
+        cancelText="取消"
+        confirmLoading={reclustering}
+      >
+        <Form form={reclusterForm} layout="vertical">
+          <Form.Item
+            name="n_clusters"
+            label="子聚类数"
+            rules={[{ required: true, message: '请输入子聚类数' }]}
+            initialValue={3}
+          >
+            <InputNumber
+              min={2}
+              max={20}
+              style={{ width: '100%' }}
+              placeholder="请输入子聚类数（2-20）"
+            />
+          </Form.Item>
+          <Form.Item
+            name="reuse_images"
+            label="复用图片"
+            initialValue={true}
+          >
+            <Select
+              options={[
+                { label: '是', value: true },
+                { label: '否', value: false }
+              ]}
+            />
+          </Form.Item>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            再次聚类将使用与父聚类相同的指标和算法，子聚类编号格式为：父编号-自编号（如：{typeof reclusteringClusterId === 'string' ? reclusteringClusterId : reclusteringClusterId}-0, {typeof reclusteringClusterId === 'string' ? reclusteringClusterId : reclusteringClusterId}-1）
+          </Text>
         </Form>
       </Modal>
     </div>

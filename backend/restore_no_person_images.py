@@ -34,13 +34,13 @@ class ThreadSafeCounter:
         with self._lock:
             return self._value
 
-def restore_single_image(recycle_image_id, app_factory, total_count, counter, restored_counter, failed_counter, errors_list, lock):
+def restore_single_image(recycle_image_id, app_instance, total_count, counter, restored_counter, failed_counter, errors_list, lock):
     """
     恢复单张图片（线程函数）
     
     Args:
         recycle_image_id: 回收站图片ID
-        app_factory: Flask应用工厂函数
+        app_instance: Flask应用实例（共享）
         total_count: 总数量（用于显示进度）
         counter: 已处理计数器
         restored_counter: 成功恢复计数器
@@ -48,9 +48,8 @@ def restore_single_image(recycle_image_id, app_factory, total_count, counter, re
         errors_list: 错误列表
         lock: 线程锁（用于保护共享资源）
     """
-    # 每个线程需要自己的app context
-    app = app_factory()
-    with app.app_context():
+    # 使用共享的app实例，但每个线程需要自己的app context和数据库会话
+    with app_instance.app_context():
         try:
             # 重新查询图片（避免跨线程对象共享问题）
             # 使用with_for_update锁定记录，防止并发冲突
@@ -183,7 +182,7 @@ def restore_single_image(recycle_image_id, app_factory, total_count, counter, re
                     print(f"  ✗ {error_msg}")
             return False
 
-def restore_no_person_images(max_workers=10):
+def restore_no_person_images(max_workers=5):
     """恢复回收站中清洗原因为"无人物"的图片（多线程版本）"""
     app = create_app()
     
@@ -205,7 +204,7 @@ def restore_no_person_images(max_workers=10):
             
             print("=" * 80)
             print(f"开始还原清洗原因为'无人物'的回收站图片，共 {total_count} 张")
-            print(f"使用 {max_workers} 个线程并行处理")
+            print(f"使用 {max_workers} 个线程并行处理（共享app实例以节省文件句柄）")
             print("=" * 80)
             
             if total_count > 0:
@@ -227,6 +226,8 @@ def restore_no_person_images(max_workers=10):
             recycle_image_ids = [img.id for img in recycle_images]
             
             # 使用线程池并行处理
+            # 创建共享的app实例，避免每个线程都创建新的app（导致文件句柄耗尽）
+            shared_app = create_app()
             start_time = datetime.now()
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # 提交所有任务
@@ -234,7 +235,7 @@ def restore_no_person_images(max_workers=10):
                     executor.submit(
                         restore_single_image,
                         img_id,
-                        create_app,
+                        shared_app,
                         total_count,
                         counter,
                         restored_counter,
@@ -317,9 +318,9 @@ if __name__ == '__main__':
         print("没有找到需要恢复的图片，退出")
         sys.exit(0)
     
-    # 获取线程数（可通过环境变量设置，默认10）
-    max_workers = int(os.environ.get('MAX_WORKERS', '10'))
-    print(f"将使用 {max_workers} 个线程并行处理")
+    # 获取线程数（可通过环境变量设置，默认5，避免文件句柄耗尽）
+    max_workers = int(os.environ.get('MAX_WORKERS', '5'))
+    print(f"将使用 {max_workers} 个线程并行处理（建议不超过5个，避免文件句柄耗尽）")
     print()
     
     # 确认操作（支持非交互式运行，通过环境变量或命令行参数）
