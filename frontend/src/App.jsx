@@ -28,6 +28,7 @@ import SampleImageManagement from './pages/SampleImageManagement'
 import SampleImageLutResults from './pages/SampleImageLutResults'
 import LutAnalysisTest from './pages/LutAnalysisTest'
 import LutClusterAnalysis from './pages/LutClusterAnalysis'
+import LutClusterSnapshots from './pages/LutClusterSnapshots'
 import ImageSimilarityTest from './pages/ImageSimilarityTest'
 
 function App() {
@@ -64,6 +65,7 @@ function App() {
           <Route path="/lut-analysis/sample-images" element={<SampleImageManagement />} />
           <Route path="/lut-analysis/sample-images/:imageId/lut-results" element={<SampleImageLutResults />} />
           <Route path="/lut-analysis/cluster" element={<LutClusterAnalysis />} />
+          <Route path="/lut-analysis/snapshots" element={<LutClusterSnapshots />} />
           <Route path="/settings/directory" element={<SettingsDirectory />} />
         </Routes>
       </MainLayout>

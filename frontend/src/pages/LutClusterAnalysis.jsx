@@ -15,12 +15,16 @@ import {
   Modal,
   Image,
   Pagination,
-  Select
+  Select,
+  Form,
+  Input,
+  Popconfirm
 } from 'antd'
-import { ClusterOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons'
+import { ClusterOutlined, EyeOutlined, ReloadOutlined, DeleteOutlined, SaveOutlined } from '@ant-design/icons'
 import api from '../services/api'
 
 const { Title, Text } = Typography
+const { TextArea } = Input
 
 const LutClusterAnalysis = () => {
   const navigate = useNavigate()
@@ -41,6 +45,8 @@ const LutClusterAnalysis = () => {
   const [reuseImages, setReuseImages] = useState(true) // 默认复用已生成的图片
   const [previewModalVisible, setPreviewModalVisible] = useState(false)
   const [previewFile, setPreviewFile] = useState(null)
+  const [saveSnapshotModalVisible, setSaveSnapshotModalVisible] = useState(false)
+  const [snapshotForm] = Form.useForm()
 
   useEffect(() => {
     fetchClusterStats()
@@ -136,6 +142,58 @@ const LutClusterAnalysis = () => {
     setPreviewModalVisible(true)
   }
 
+  const handleDistill = async (clusterId, lutFileId) => {
+    try {
+      const response = await api.post(`/lut-files/cluster/${clusterId}/distill/${lutFileId}`)
+      if (response.code === 200) {
+        message.success('蒸馏成功')
+        // 刷新文件列表和统计
+        await fetchClusterFiles(selectedClusterId, filesPagination.current)
+        await fetchClusterStats()
+        // 如果当前聚类没有文件了，清空选择
+        if (clusterFiles.length === 1) {
+          setSelectedClusterId(null)
+          setClusterFiles([])
+        }
+      } else {
+        message.error(response.message || '蒸馏失败')
+      }
+    } catch (error) {
+      message.error('蒸馏失败：' + (error.response?.data?.message || error.message))
+    }
+  }
+
+  const handleSaveSnapshot = async () => {
+    try {
+      const values = await snapshotForm.validateFields()
+      const response = await api.post('/lut-files/cluster/snapshot', {
+        name: values.name,
+        description: values.description || '',
+        metric: clusterMetric,
+        metric_name: clusterMetric === 'lightweight_7d' ? '轻量7维特征' :
+                     clusterMetric === 'image_features' ? '图像特征映射' :
+                     clusterMetric === 'image_similarity' ? '图片相似度' :
+                     clusterMetric === 'ssim' ? 'SSIM（结构相似性）' :
+                     clusterMetric === 'euclidean' ? '像素欧氏距离' : '未知',
+        algorithm: clusterAlgorithm,
+        algorithm_name: clusterAlgorithm === 'kmeans' ? 'K-Means' : '凝聚式层次聚类'
+      })
+      if (response.code === 200) {
+        message.success('快照保存成功')
+        setSaveSnapshotModalVisible(false)
+        snapshotForm.resetFields()
+      } else {
+        message.error(response.message || '保存快照失败')
+      }
+    } catch (error) {
+      if (error.errorFields) {
+        // 表单验证错误
+        return
+      }
+      message.error('保存快照失败：' + (error.response?.data?.message || error.message))
+    }
+  }
+
   const getClusterColor = (clusterId) => {
     const colors = ['red', 'blue', 'green', 'orange', 'purple', 'cyan', 'magenta', 'gold', 'lime', 'volcano']
     return colors[clusterId % colors.length]
@@ -217,6 +275,15 @@ const LutClusterAnalysis = () => {
               >
                 刷新
               </Button>
+              {clusterStats && clusterStats.total_clusters > 0 && (
+                <Button
+                  type="default"
+                  icon={<SaveOutlined />}
+                  onClick={() => setSaveSnapshotModalVisible(true)}
+                >
+                  保存快照
+                </Button>
+              )}
             </Space>
           </div>
 
@@ -355,16 +422,33 @@ const LutClusterAnalysis = () => {
                                       </div>
                                     )}
                                   </div>
-                                  <Button
-                                    type="primary"
-                                    size="small"
-                                    icon={<EyeOutlined />}
-                                    onClick={() => handlePreview(file)}
-                                    block
-                                    style={{ marginTop: '8px' }}
-                                  >
-                                    预览
-                                  </Button>
+                                  <Space style={{ marginTop: '8px', width: '100%' }} direction="vertical" size="small">
+                                    <Button
+                                      type="primary"
+                                      size="small"
+                                      icon={<EyeOutlined />}
+                                      onClick={() => handlePreview(file)}
+                                      block
+                                    >
+                                      预览
+                                    </Button>
+                                    <Popconfirm
+                                      title="确定要蒸馏这个LUT文件吗？"
+                                      description="蒸馏后该文件将不再显示在当前聚类中"
+                                      onConfirm={() => handleDistill(selectedClusterId, file.id)}
+                                      okText="确定"
+                                      cancelText="取消"
+                                    >
+                                      <Button
+                                        danger
+                                        size="small"
+                                        icon={<DeleteOutlined />}
+                                        block
+                                      >
+                                        蒸馏
+                                      </Button>
+                                    </Popconfirm>
+                                  </Space>
                                 </Card>
                               </Col>
                             ))}
@@ -420,6 +504,35 @@ const LutClusterAnalysis = () => {
             )}
           </div>
         )}
+      </Modal>
+
+      {/* 保存快照模态框 */}
+      <Modal
+        title="保存聚类快照"
+        open={saveSnapshotModalVisible}
+        onOk={handleSaveSnapshot}
+        onCancel={() => {
+          setSaveSnapshotModalVisible(false)
+          snapshotForm.resetFields()
+        }}
+        okText="保存"
+        cancelText="取消"
+      >
+        <Form form={snapshotForm} layout="vertical">
+          <Form.Item
+            name="name"
+            label="快照名称"
+            rules={[{ required: true, message: '请输入快照名称' }]}
+          >
+            <Input placeholder="请输入快照名称" />
+          </Form.Item>
+          <Form.Item
+            name="description"
+            label="快照描述"
+          >
+            <TextArea rows={4} placeholder="请输入快照描述（可选）" />
+          </Form.Item>
+        </Form>
       </Modal>
     </div>
   )

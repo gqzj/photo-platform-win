@@ -6,6 +6,7 @@ from app.models.lut_category import LutCategory
 from app.models.lut_file_tag import LutFileTag
 from app.models.lut_file_analysis_task import LutFileAnalysisTask
 from app.models.lut_cluster import LutCluster
+from app.models.lut_cluster_snapshot import LutClusterSnapshot
 from app.utils.config_manager import get_local_image_dir
 from app.services.lut_analysis_service import LutAnalysisService
 from werkzeug.utils import secure_filename
@@ -1365,9 +1366,12 @@ def get_cluster_stats():
         
         # 检查表是否存在
         try:
+            # 只统计未蒸馏的文件
             stats = db.session.query(
                 LutCluster.cluster_id,
                 func.count(LutCluster.id).label('file_count')
+            ).filter(
+                LutCluster.distilled == False
             ).group_by(LutCluster.cluster_id).all()
         except Exception as query_error:
             # 如果查询失败，可能是表不存在或没有数据
@@ -1422,9 +1426,10 @@ def get_cluster_files(cluster_id):
         from sklearn.preprocessing import StandardScaler
         from sklearn.metrics import pairwise_distances
         
-        # 查询指定聚类的所有LUT文件
+        # 查询指定聚类的所有LUT文件（排除已蒸馏的文件）
         all_files = LutFile.query.join(LutCluster).filter(
-            LutCluster.cluster_id == cluster_id
+            LutCluster.cluster_id == cluster_id,
+            LutCluster.distilled == False
         ).options(
             joinedload(LutFile.category),
             joinedload(LutFile.tags)
@@ -1451,7 +1456,8 @@ def get_cluster_files(cluster_id):
             # MySQL不支持NULLS LAST，使用CASE表达式将NULL值排序到最后
             from sqlalchemy import case, func
             query_with_distance = LutFile.query.join(LutCluster).filter(
-                LutCluster.cluster_id == cluster_id
+                LutCluster.cluster_id == cluster_id,
+                LutCluster.distilled == False
             ).options(
                 joinedload(LutFile.category),
                 joinedload(LutFile.tags)
@@ -1553,3 +1559,141 @@ def generate_thumbnail(file_id):
         current_app.logger.error(f"生成LUT文件缩略图失败: {error_detail}")
         return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
 
+@bp.route('/cluster/<int:cluster_id>/distill/<int:lut_file_id>', methods=['POST'])
+def distill_lut_file(cluster_id, lut_file_id):
+    """蒸馏LUT文件（标记为已蒸馏，不再显示在聚类中）"""
+    try:
+        # 查找聚类记录
+        cluster_record = LutCluster.query.filter_by(
+            cluster_id=cluster_id,
+            lut_file_id=lut_file_id
+        ).first()
+        
+        if not cluster_record:
+            return jsonify({'code': 404, 'message': '聚类记录不存在'}), 404
+        
+        # 标记为已蒸馏
+        cluster_record.distilled = True
+        db.session.commit()
+        
+        return jsonify({
+            'code': 200,
+            'message': '蒸馏成功',
+            'data': {'distilled': True}
+        })
+    except Exception as e:
+        db.session.rollback()
+        error_detail = traceback.format_exc()
+        current_app.logger.error(f"蒸馏LUT文件失败: {error_detail}")
+        return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
+
+@bp.route('/cluster/snapshot', methods=['POST'])
+def save_cluster_snapshot():
+    """保存聚类分析快照"""
+    try:
+        data = request.get_json() or {}
+        name = data.get('name', '')
+        description = data.get('description', '')
+        metric = data.get('metric', 'unknown')
+        metric_name = data.get('metric_name', '未知')
+        algorithm = data.get('algorithm', 'unknown')
+        algorithm_name = data.get('algorithm_name', '未知')
+        
+        if not name:
+            return jsonify({'code': 400, 'message': '快照名称不能为空'}), 400
+        
+        # 获取当前聚类统计信息
+        from sqlalchemy import func
+        stats = db.session.query(
+            LutCluster.cluster_id,
+            func.count(LutCluster.id).label('file_count')
+        ).filter(
+            LutCluster.distilled == False
+        ).group_by(LutCluster.cluster_id).all()
+        
+        if not stats:
+            return jsonify({'code': 400, 'message': '没有可保存的聚类数据'}), 400
+        
+        # 获取每个聚类的详细信息
+        cluster_data = {}
+        for stat in stats:
+            cluster_id = stat.cluster_id if hasattr(stat, 'cluster_id') else stat[0]
+            file_count = stat.file_count if hasattr(stat, 'file_count') else stat[1]
+            
+            # 获取该聚类的文件列表（未蒸馏的）
+            files = LutFile.query.join(LutCluster).filter(
+                LutCluster.cluster_id == cluster_id,
+                LutCluster.distilled == False
+            ).all()
+            
+            cluster_data[str(cluster_id)] = {
+                'file_count': file_count,
+                'files': [f.to_dict() for f in files]
+            }
+        
+        # 创建快照记录
+        snapshot = LutClusterSnapshot(
+            name=name,
+            description=description,
+            metric=metric,
+            metric_name=metric_name,
+            algorithm=algorithm,
+            algorithm_name=algorithm_name,
+            n_clusters=len(stats),
+            cluster_data_json=json.dumps(cluster_data, ensure_ascii=False)
+        )
+        
+        db.session.add(snapshot)
+        db.session.commit()
+        
+        return jsonify({
+            'code': 200,
+            'message': '快照保存成功',
+            'data': snapshot.to_dict()
+        })
+    except Exception as e:
+        db.session.rollback()
+        error_detail = traceback.format_exc()
+        current_app.logger.error(f"保存聚类快照失败: {error_detail}")
+        return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
+
+@bp.route('/cluster/snapshots', methods=['GET'])
+def get_cluster_snapshots():
+    """获取聚类快照列表"""
+    try:
+        page = request.args.get('page', 1, type=int)
+        page_size = request.args.get('page_size', 20, type=int)
+        
+        query = LutClusterSnapshot.query.order_by(LutClusterSnapshot.created_at.desc())
+        total = query.count()
+        snapshots = query.offset((page - 1) * page_size).limit(page_size).all()
+        
+        return jsonify({
+            'code': 200,
+            'message': 'success',
+            'data': {
+                'list': [s.to_dict() for s in snapshots],
+                'total': total,
+                'page': page,
+                'page_size': page_size
+            }
+        })
+    except Exception as e:
+        error_detail = traceback.format_exc()
+        current_app.logger.error(f"获取聚类快照列表失败: {error_detail}")
+        return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
+
+@bp.route('/cluster/snapshot/<int:snapshot_id>', methods=['GET'])
+def get_cluster_snapshot(snapshot_id):
+    """获取聚类快照详情"""
+    try:
+        snapshot = LutClusterSnapshot.query.get_or_404(snapshot_id)
+        return jsonify({
+            'code': 200,
+            'message': 'success',
+            'data': snapshot.to_dict()
+        })
+    except Exception as e:
+        error_detail = traceback.format_exc()
+        current_app.logger.error(f"获取聚类快照详情失败: {error_detail}")
+        return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500

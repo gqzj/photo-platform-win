@@ -239,6 +239,11 @@ const MainLayout = ({ children }) => {
           key: '/lut-analysis/cluster',
           icon: <AppstoreOutlined />,
           label: 'LUT聚类分析'
+        },
+        {
+          key: '/lut-analysis/snapshots',
+          icon: <FileImageOutlined />,
+          label: 'LUT聚类快照'
         }
       ],
       settings: [
