@@ -107,7 +107,7 @@ class DataCleaningService:
             logger.error(f"移动图片到回收站失败: {e}", exc_info=True)
             return False
     
-    def _get_filter_keywords(self, task: DataCleaningTask) -> List[str]:
+    def _get_filter_keywords(self, task: DataCleaningTask) -> Optional[List[str]]:
         """
         获取任务的筛选关键字列表
         
@@ -115,13 +115,20 @@ class DataCleaningService:
             task: DataCleaningTask对象
             
         Returns:
-            List[str]: 关键字列表
+            Optional[List[str]]: 关键字列表，如果为None表示处理所有关键字（"全部"）
         """
         try:
             if task.filter_keywords:
                 keywords = json.loads(task.filter_keywords)
                 if isinstance(keywords, list):
-                    return [k.strip() for k in keywords if k.strip()]
+                    keywords = [k.strip() for k in keywords if k.strip()]
+                    
+                    # 检查是否包含"全部"
+                    if '全部' in keywords:
+                        logger.info(f"关键字包含'全部'，将处理所有关键字的图片")
+                        return None  # 返回None表示处理所有关键字
+                    else:
+                        return keywords
             return []
         except Exception as e:
             logger.error(f"解析筛选关键字失败: {e}", exc_info=True)
@@ -180,13 +187,14 @@ class DataCleaningService:
                     'message': '未设置筛选特征'
                 }
             
-            logger.info(f"开始执行清洗任务 {task_id}: features={filter_features}, keywords={filter_keywords}")
+            logger.info(f"开始执行清洗任务 {task_id}: features={filter_features}, keywords={filter_keywords if filter_keywords is not None else '全部'}")
             
             # 构建查询条件
             query = Image.query.filter(Image.status == 'active')
             
             # 如果设置了关键字筛选，添加关键字条件
-            if filter_keywords:
+            # 如果 filter_keywords 为 None，表示处理所有关键字（"全部"），不添加筛选条件
+            if filter_keywords is not None and len(filter_keywords) > 0:
                 keyword_conditions = [Image.keyword.like(f'%{kw}%') for kw in filter_keywords]
                 query = query.filter(or_(*keyword_conditions))
             

@@ -971,19 +971,35 @@ def interrupt_batch_analyze():
         current_app.logger.error(f"中断批量分析任务失败: {error_detail}")
         return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
 
+def get_lut_cluster_image_dir():
+    """获取LUT聚类分析图片存储目录"""
+    base_dir = get_local_image_dir()
+    cluster_image_dir = os.path.join(os.path.dirname(base_dir), 'storage', 'lut_cluster_images')
+    os.makedirs(cluster_image_dir, exist_ok=True)
+    return cluster_image_dir
+
 @bp.route('/cluster', methods=['POST'])
 def cluster_lut_files():
     """执行LUT文件聚类分析"""
     try:
         data = request.get_json() or {}
         n_clusters = data.get('n_clusters', 5)  # 默认5个聚类
-        method = data.get('method', 'lightweight_7d')  # 默认使用轻量7维特征
+        metric = data.get('metric', 'lightweight_7d')  # 聚类指标：默认使用轻量7维特征
+        algorithm = data.get('algorithm', 'kmeans')  # 聚类算法：默认使用K-Means
+        reuse_images = data.get('reuse_images', True)  # 默认复用已生成的图片
         
         if n_clusters < 2:
             return jsonify({'code': 400, 'message': '聚类数必须大于等于2'}), 400
         
-        if method not in ['lightweight_7d', 'image_features', 'image_similarity', 'ssim']:
-            return jsonify({'code': 400, 'message': '不支持的聚类方法，支持的方法：lightweight_7d（轻量7维特征）、image_features（图像特征映射）、image_similarity（图片相似度）、ssim（结构相似性）'}), 400
+        if metric not in ['lightweight_7d', 'image_features', 'image_similarity', 'ssim', 'euclidean']:
+            return jsonify({'code': 400, 'message': '不支持的聚类指标，支持的指标：lightweight_7d（轻量7维特征）、image_features（图像特征映射）、image_similarity（图片相似度）、ssim（结构相似性）、euclidean（像素欧氏距离）'}), 400
+        
+        if algorithm not in ['kmeans', 'hierarchical']:
+            return jsonify({'code': 400, 'message': '不支持的聚类算法，支持的算法：kmeans（K-Means）、hierarchical（凝聚式层次聚类）'}), 400
+        
+        # image_similarity、ssim 和 euclidean 方法只能使用层次聚类（因为它们已经计算了距离矩阵）
+        if metric in ['image_similarity', 'ssim', 'euclidean'] and algorithm != 'hierarchical':
+            return jsonify({'code': 400, 'message': f'聚类指标"{metric}"只能使用层次聚类算法'}), 400
         
         # 获取所有.cube格式的LUT文件
         lut_files = LutFile.query.filter(
@@ -1001,36 +1017,54 @@ def cluster_lut_files():
         file_ids = []
         failed_files = []
         
-        # 如果是图像特征映射、图片相似度或SSIM方法，需要找到standard.png
+        # 如果是图像特征映射、图片相似度、SSIM或欧氏距离方法，需要找到标准测试图
         standard_image_path = None
-        if method in ['image_features', 'image_similarity', 'ssim']:
-            # 查找standard.png（在backend目录下）
+        if metric in ['image_features', 'image_similarity', 'ssim', 'euclidean']:
             # __file__ 是 backend/app/api/lut_file.py，需要往上3级到backend目录
             backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            standard_image_path = os.path.join(backend_dir, 'standard.png')
-            if not os.path.exists(standard_image_path):
-                # 尝试lut_standard.png
+            
+            # image_similarity、ssim 和 euclidean 方法优先使用 lut_standard.png
+            if metric in ['image_similarity', 'ssim', 'euclidean']:
+                # 优先查找lut_standard.png
                 standard_image_path = os.path.join(backend_dir, 'lut_standard.png')
                 if not os.path.exists(standard_image_path):
-                    return jsonify({'code': 400, 'message': '标准测试图不存在，请确保backend目录下有standard.png或lut_standard.png文件'}), 400
+                    # 如果不存在，尝试standard.png
+                    standard_image_path = os.path.join(backend_dir, 'standard.png')
+                    if not os.path.exists(standard_image_path):
+                        return jsonify({'code': 400, 'message': '标准测试图不存在，请确保backend目录下有lut_standard.png或standard.png文件'}), 400
+            else:  # image_features
+                # image_features 方法保持原逻辑：先查找standard.png
+                standard_image_path = os.path.join(backend_dir, 'standard.png')
+                if not os.path.exists(standard_image_path):
+                    # 尝试lut_standard.png
+                    standard_image_path = os.path.join(backend_dir, 'lut_standard.png')
+                    if not os.path.exists(standard_image_path):
+                        return jsonify({'code': 400, 'message': '标准测试图不存在，请确保backend目录下有standard.png或lut_standard.png文件'}), 400
         
-        method_name_map = {
+        metric_name_map = {
             'lightweight_7d': '轻量7维特征',
             'image_features': '图像特征映射',
             'image_similarity': '图片相似度',
-            'ssim': 'SSIM（结构相似性）'
+            'ssim': 'SSIM（结构相似性）',
+            'euclidean': '像素欧氏距离'
         }
-        method_name = method_name_map.get(method, '未知方法')
-        current_app.logger.info(f"开始使用{method_name}方法提取 {len(lut_files)} 个LUT文件的特征")
+        algorithm_name_map = {
+            'kmeans': 'K-Means',
+            'hierarchical': '凝聚式层次聚类'
+        }
+        metric_name = metric_name_map.get(metric, '未知指标')
+        algorithm_name = algorithm_name_map.get(algorithm, '未知算法')
+        current_app.logger.info(f"开始使用{metric_name}指标和{algorithm_name}算法提取 {len(lut_files)} 个LUT文件的特征")
         
-        # 图片相似度方法和SSIM方法需要特殊处理
-        if method in ['image_similarity', 'ssim']:
+        # 图片相似度方法、SSIM方法和欧氏距离方法需要特殊处理
+        file_distances = {}  # 初始化距离字典
+        if metric in ['image_similarity', 'ssim', 'euclidean']:
             # 先将所有LUT应用到标准测试图，生成结果图
             from app.services.lut_application_service import LutApplicationService
-            import tempfile
             
             lut_service = LutApplicationService()
-            temp_dir = tempfile.gettempdir()
+            # 使用固定的存储目录，而不是临时目录，以便复用
+            cluster_image_dir = get_lut_cluster_image_dir()
             image_paths = []
             
             for lut_file in lut_files:
@@ -1040,57 +1074,89 @@ def cluster_lut_files():
                     continue
                 
                 try:
-                    # 生成临时图片路径
-                    temp_output = os.path.join(temp_dir, f"lut_cluster_{lut_file.id}.jpg")
+                    # 生成图片路径（使用固定目录，文件名包含LUT文件ID）
+                    output_path = os.path.join(cluster_image_dir, f"lut_cluster_{lut_file.id}.jpg")
                     
-                    # 应用LUT到标准测试图
-                    success, error_msg = lut_service.apply_lut_to_image(
-                        standard_image_path,
-                        file_path,
-                        temp_output
-                    )
-                    
-                    if success:
-                        image_paths.append(temp_output)
+                    # 如果启用复用且文件已存在，直接使用
+                    if reuse_images and os.path.exists(output_path):
+                        current_app.logger.info(f"复用已生成的图片: LUT文件ID={lut_file.id}, 路径={output_path}")
+                        image_paths.append(output_path)
                         file_ids.append(lut_file.id)
                     else:
-                        failed_files.append({'id': lut_file.id, 'filename': lut_file.original_filename, 'error': f'应用LUT失败: {error_msg}'})
+                        # 应用LUT到标准测试图
+                        success, error_msg = lut_service.apply_lut_to_image(
+                            standard_image_path,
+                            file_path,
+                            output_path
+                        )
+                        
+                        if success:
+                            current_app.logger.info(f"生成新图片: LUT文件ID={lut_file.id}, 路径={output_path}")
+                            image_paths.append(output_path)
+                            file_ids.append(lut_file.id)
+                        else:
+                            failed_files.append({'id': lut_file.id, 'filename': lut_file.original_filename, 'error': f'应用LUT失败: {error_msg}'})
                 except Exception as e:
                     failed_files.append({'id': lut_file.id, 'filename': lut_file.original_filename, 'error': str(e)})
             
             if len(image_paths) < n_clusters:
-                # 清理临时文件
-                for img_path in image_paths:
-                    try:
-                        if os.path.exists(img_path):
-                            os.remove(img_path)
-                    except:
-                        pass
-                return jsonify({
-                    'code': 400,
-                    'message': f'成功生成图片的LUT文件数量({len(image_paths)})少于聚类数({n_clusters})',
-                    'data': {'failed_files': failed_files}
-                }), 400
-            
-            # 计算相似度矩阵
-            try:
-                if method == 'ssim':
-                    similarity_matrix = analysis_service.calculate_ssim_similarity_matrix(image_paths)
-                else:  # image_similarity
-                    similarity_matrix = analysis_service.calculate_image_similarity_matrix(image_paths)
-                
-                if similarity_matrix is None:
-                    # 清理临时文件
+                # 如果reuse_images为False，清理生成的图片
+                if not reuse_images:
                     for img_path in image_paths:
                         try:
                             if os.path.exists(img_path):
                                 os.remove(img_path)
                         except:
                             pass
-                    return jsonify({'code': 500, 'message': '计算相似度矩阵失败'}), 500
-                
-                # 将相似度矩阵转换为距离矩阵（1 - 相似度）
-                distance_matrix = 1 - similarity_matrix
+                return jsonify({
+                    'code': 400,
+                    'message': f'成功生成图片的LUT文件数量({len(image_paths)})少于聚类数({n_clusters})',
+                    'data': {'failed_files': failed_files}
+                }), 400
+            
+            # 计算相似度矩阵或距离矩阵
+            try:
+                if metric == 'ssim':
+                    similarity_matrix = analysis_service.calculate_ssim_similarity_matrix(image_paths)
+                    if similarity_matrix is None:
+                        # 如果reuse_images为False，清理生成的图片
+                        if not reuse_images:
+                            for img_path in image_paths:
+                                try:
+                                    if os.path.exists(img_path):
+                                        os.remove(img_path)
+                                except:
+                                    pass
+                        return jsonify({'code': 500, 'message': '计算相似度矩阵失败'}), 500
+                    # 将相似度矩阵转换为距离矩阵（1 - 相似度）
+                    distance_matrix = 1 - similarity_matrix
+                elif metric == 'euclidean':
+                    # 计算欧氏距离矩阵
+                    distance_matrix = analysis_service.calculate_euclidean_distance_matrix(image_paths)
+                    if distance_matrix is None:
+                        # 如果reuse_images为False，清理生成的图片
+                        if not reuse_images:
+                            for img_path in image_paths:
+                                try:
+                                    if os.path.exists(img_path):
+                                        os.remove(img_path)
+                                except:
+                                    pass
+                        return jsonify({'code': 500, 'message': '计算欧氏距离矩阵失败'}), 500
+                else:  # image_similarity
+                    similarity_matrix = analysis_service.calculate_image_similarity_matrix(image_paths)
+                    if similarity_matrix is None:
+                        # 如果reuse_images为False，清理生成的图片
+                        if not reuse_images:
+                            for img_path in image_paths:
+                                try:
+                                    if os.path.exists(img_path):
+                                        os.remove(img_path)
+                                except:
+                                    pass
+                        return jsonify({'code': 500, 'message': '计算相似度矩阵失败'}), 500
+                    # 将相似度矩阵转换为距离矩阵（1 - 相似度）
+                    distance_matrix = 1 - similarity_matrix
                 
                 # 使用层次聚类（AgglomerativeClustering）进行聚类
                 from sklearn.cluster import AgglomerativeClustering
@@ -1103,25 +1169,43 @@ def cluster_lut_files():
                 )
                 cluster_labels = clustering.fit_predict(distance_matrix)
                 
-                # 清理临时文件
-                for img_path in image_paths:
-                    try:
-                        if os.path.exists(img_path):
-                            os.remove(img_path)
-                    except:
-                        pass
+                # 计算每个文件到其所属聚类中心的距离（基于距离矩阵）
+                import numpy as np
+                for cluster_id in range(n_clusters):
+                    cluster_mask = cluster_labels == cluster_id
+                    cluster_indices = np.where(cluster_mask)[0]
+                    if len(cluster_indices) > 0:
+                        # 计算该聚类内所有点到其他点的平均距离，作为到中心的距离
+                        for idx in cluster_indices:
+                            # 计算该点到聚类内其他所有点的平均距离
+                            cluster_distances = distance_matrix[idx, cluster_indices]
+                            avg_distance = np.mean(cluster_distances)
+                            file_id = file_ids[idx]
+                            file_distances[file_id] = float(avg_distance)
+                
+                # 如果reuse_images为False，清理生成的图片
+                if not reuse_images:
+                    for img_path in image_paths:
+                        try:
+                            if os.path.exists(img_path):
+                                os.remove(img_path)
+                        except:
+                            pass
+                else:
+                    current_app.logger.info(f"保留生成的图片文件以便复用，共 {len(image_paths)} 个文件")
                         
             except Exception as e:
-                # 清理临时文件
-                for img_path in image_paths:
-                    try:
-                        if os.path.exists(img_path):
-                            os.remove(img_path)
-                    except:
-                        pass
-                method_name_display = method_name_map.get(method, method)
-                current_app.logger.error(f"{method_name_display}聚类失败: {e}")
-                return jsonify({'code': 500, 'message': f'{method_name_display}聚类失败: {str(e)}'}), 500
+                # 如果reuse_images为False，清理生成的图片
+                if not reuse_images:
+                    for img_path in image_paths:
+                        try:
+                            if os.path.exists(img_path):
+                                os.remove(img_path)
+                        except:
+                            pass
+                metric_name_display = metric_name_map.get(metric, metric)
+                current_app.logger.error(f"{metric_name_display}聚类失败: {e}")
+                return jsonify({'code': 500, 'message': f'{metric_name_display}聚类失败: {str(e)}'}), 500
         
         else:
             # 其他方法：提取特征向量
@@ -1132,7 +1216,7 @@ def cluster_lut_files():
                     continue
                 
                 try:
-                    if method == 'lightweight_7d':
+                    if metric == 'lightweight_7d':
                         features = analysis_service.extract_7d_features(file_path)
                     else:  # image_features
                         features = analysis_service.extract_image_features(file_path, standard_image_path)
@@ -1152,36 +1236,89 @@ def cluster_lut_files():
                     'data': {'failed_files': failed_files}
                 }), 400
             
-            # 使用K-Means进行聚类
+            # 根据选择的算法进行聚类
             try:
-                from sklearn.cluster import KMeans
+                from sklearn.cluster import KMeans, AgglomerativeClustering
                 from sklearn.preprocessing import StandardScaler
+                from sklearn.metrics import pairwise_distances
                 
                 # 特征标准化
                 scaler = StandardScaler()
                 features_scaled = scaler.fit_transform(features_list)
                 
-                # K-Means聚类
-                kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
-                cluster_labels = kmeans.fit_predict(features_scaled)
+                if algorithm == 'kmeans':
+                    # K-Means聚类
+                    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
+                    cluster_labels = kmeans.fit_predict(features_scaled)
+                    # K-Means可以直接获取聚类中心
+                    cluster_centers = kmeans.cluster_centers_
+                else:  # hierarchical
+                    # 凝聚式层次聚类
+                    # 计算距离矩阵（欧氏距离）
+                    distance_matrix = pairwise_distances(features_scaled, metric='euclidean')
+                    
+                    clustering = AgglomerativeClustering(
+                        n_clusters=n_clusters,
+                        linkage='average',
+                        metric='precomputed'
+                    )
+                    cluster_labels = clustering.fit_predict(distance_matrix)
+                    # 对于层次聚类，需要计算每个聚类的中心（均值）
+                    import numpy as np
+                    cluster_centers = {}
+                    for cluster_id in range(n_clusters):
+                        cluster_mask = cluster_labels == cluster_id
+                        if np.any(cluster_mask):
+                            cluster_centers[cluster_id] = np.mean(features_scaled[cluster_mask], axis=0)
             except ImportError:
                 return jsonify({'code': 500, 'message': 'sklearn库未安装，请安装: pip install scikit-learn'}), 500
             except Exception as e:
                 db.session.rollback()
                 error_detail = traceback.format_exc()
-                current_app.logger.error(f"K-Means聚类失败: {error_detail}")
+                current_app.logger.error(f"{algorithm_name}聚类失败: {error_detail}")
                 return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
+        
+        # 计算每个文件到其所属聚类中心的距离（仅对特征向量方法）
+        # euclidean 方法使用距离矩阵，不需要计算到中心的距离（已在上面计算）
+        if metric not in ['image_similarity', 'ssim', 'euclidean']:
+            import numpy as np
+            file_distances = {}
+            if algorithm == 'kmeans':
+                # K-Means：直接使用聚类中心
+                for i, (file_id, cluster_id) in enumerate(zip(file_ids, cluster_labels)):
+                    center = cluster_centers[int(cluster_id)]
+                    distance = np.linalg.norm(features_scaled[i] - center)
+                    file_distances[file_id] = float(distance)
+            else:
+                # 层次聚类：使用计算出的聚类中心
+                for i, (file_id, cluster_id) in enumerate(zip(file_ids, cluster_labels)):
+                    cluster_id_int = int(cluster_id)
+                    if cluster_id_int in cluster_centers:
+                        center = cluster_centers[cluster_id_int]
+                        distance = np.linalg.norm(features_scaled[i] - center)
+                        file_distances[file_id] = float(distance)
+                    else:
+                        # 如果聚类中心不存在，计算该聚类内所有点的均值作为中心
+                        cluster_mask = cluster_labels == cluster_id_int
+                        if np.any(cluster_mask):
+                            center = np.mean(features_scaled[cluster_mask], axis=0)
+                            distance = np.linalg.norm(features_scaled[i] - center)
+                            file_distances[file_id] = float(distance)
+                        else:
+                            file_distances[file_id] = None
+        # 对于 image_similarity 和 ssim 方法，距离已在上面计算
         
         # 删除旧的聚类结果
         LutCluster.query.delete()
         db.session.commit()
         
-        # 保存聚类结果
+        # 保存聚类结果（包含距离）
         cluster_records = []
         for file_id, cluster_id in zip(file_ids, cluster_labels):
             cluster_record = LutCluster(
                 cluster_id=int(cluster_id),
-                lut_file_id=file_id
+                lut_file_id=file_id,
+                distance_to_center=file_distances.get(file_id)
             )
             cluster_records.append(cluster_record)
             db.session.add(cluster_record)
@@ -1196,15 +1333,17 @@ def cluster_lut_files():
                 cluster_stats[cluster_id] = 0
             cluster_stats[cluster_id] += 1
         
-        current_app.logger.info(f"聚类完成: {len(cluster_records)} 个文件分为 {n_clusters} 个聚类（使用{method_name}方法）")
+        current_app.logger.info(f"聚类完成: {len(cluster_records)} 个文件分为 {n_clusters} 个聚类（使用{metric_name}指标和{algorithm_name}算法）")
         
         return jsonify({
             'code': 200,
             'message': '聚类分析完成',
             'data': {
                 'n_clusters': n_clusters,
-                'method': method,
-                'method_name': method_name,
+                'metric': metric,
+                'metric_name': metric_name,
+                'algorithm': algorithm,
+                'algorithm_name': algorithm_name,
                 'total_files': len(cluster_records),
                 'failed_files': failed_files,
                 'cluster_stats': cluster_stats
@@ -1223,14 +1362,38 @@ def get_cluster_stats():
     try:
         # 统计每个聚类的文件数量
         from sqlalchemy import func
-        stats = db.session.query(
-            LutCluster.cluster_id,
-            func.count(LutCluster.id).label('file_count')
-        ).group_by(LutCluster.cluster_id).all()
         
-        cluster_stats = {str(stat.cluster_id): stat.file_count for stat in stats}
+        # 检查表是否存在
+        try:
+            stats = db.session.query(
+                LutCluster.cluster_id,
+                func.count(LutCluster.id).label('file_count')
+            ).group_by(LutCluster.cluster_id).all()
+        except Exception as query_error:
+            # 如果查询失败，可能是表不存在或没有数据
+            current_app.logger.warning(f"查询聚类统计失败: {query_error}")
+            # 返回空结果而不是错误
+            return jsonify({
+                'code': 200,
+                'message': 'success',
+                'data': {
+                    'total_clusters': 0,
+                    'total_files': 0,
+                    'cluster_stats': {}
+                }
+            })
+        
+        # 处理查询结果
+        cluster_stats = {}
+        total_files = 0
+        for stat in stats:
+            # 兼容不同的访问方式
+            cluster_id = stat.cluster_id if hasattr(stat, 'cluster_id') else stat[0]
+            file_count = stat.file_count if hasattr(stat, 'file_count') else stat[1]
+            cluster_stats[str(cluster_id)] = file_count
+            total_files += file_count
+        
         total_clusters = len(stats)
-        total_files = sum(cluster_stats.values())
         
         return jsonify({
             'code': 200,
@@ -1248,23 +1411,63 @@ def get_cluster_stats():
 
 @bp.route('/cluster/<int:cluster_id>/files', methods=['GET'])
 def get_cluster_files(cluster_id):
-    """获取指定聚类的LUT文件列表"""
+    """获取指定聚类的LUT文件列表（按与聚类中心的距离排序）"""
     try:
         page = request.args.get('page', 1, type=int)
         page_size = request.args.get('page_size', 20, type=int)
+        sort_by_distance = request.args.get('sort_by_distance', 'true', type=str).lower() == 'true'  # 默认按距离排序
         
         from sqlalchemy.orm import joinedload
+        import numpy as np
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.metrics import pairwise_distances
         
-        # 查询指定聚类的LUT文件
-        query = LutFile.query.join(LutCluster).filter(
+        # 查询指定聚类的所有LUT文件
+        all_files = LutFile.query.join(LutCluster).filter(
             LutCluster.cluster_id == cluster_id
         ).options(
             joinedload(LutFile.category),
             joinedload(LutFile.tags)
-        )
+        ).all()
         
-        total = query.count()
-        files = query.order_by(LutFile.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+        total = len(all_files)
+        
+        if total == 0:
+            return jsonify({
+                'code': 200,
+                'message': 'success',
+                'data': {
+                    'list': [],
+                    'total': 0,
+                    'page': page,
+                    'page_size': page_size,
+                    'cluster_id': cluster_id
+                }
+            })
+        
+        # 如果需要按距离排序，使用数据库中存储的距离
+        if sort_by_distance:
+            # 使用JOIN查询，按distance_to_center排序
+            # MySQL不支持NULLS LAST，使用CASE表达式将NULL值排序到最后
+            from sqlalchemy import case, func
+            query_with_distance = LutFile.query.join(LutCluster).filter(
+                LutCluster.cluster_id == cluster_id
+            ).options(
+                joinedload(LutFile.category),
+                joinedload(LutFile.tags)
+            ).order_by(
+                case(
+                    (LutCluster.distance_to_center.is_(None), 1),
+                    else_=0
+                ),
+                LutCluster.distance_to_center.asc()  # NULL值通过CASE表达式排在最后
+            )
+            
+            total = query_with_distance.count()
+            files = query_with_distance.offset((page - 1) * page_size).limit(page_size).all()
+        else:
+            # 不按距离排序，使用原始顺序
+            files = all_files[(page - 1) * page_size:page * page_size]
         
         # 构建返回数据
         result_list = []

@@ -36,7 +36,9 @@ const LutClusterAnalysis = () => {
     total: 0
   })
   const [nClusters, setNClusters] = useState(5)
-  const [clusterMethod, setClusterMethod] = useState('lightweight_7d') // 默认使用轻量7维特征
+  const [clusterMetric, setClusterMetric] = useState('lightweight_7d') // 聚类指标：默认使用轻量7维特征
+  const [clusterAlgorithm, setClusterAlgorithm] = useState('kmeans') // 聚类算法：默认使用K-Means
+  const [reuseImages, setReuseImages] = useState(true) // 默认复用已生成的图片
   const [previewModalVisible, setPreviewModalVisible] = useState(false)
   const [previewFile, setPreviewFile] = useState(null)
 
@@ -76,18 +78,15 @@ const LutClusterAnalysis = () => {
     try {
       const response = await api.post('/lut-files/cluster', {
         n_clusters: nClusters,
-        method: clusterMethod
+        metric: clusterMetric,
+        algorithm: clusterAlgorithm,
+        reuse_images: reuseImages
       })
 
       if (response.code === 200) {
-        const methodNameMap = {
-          'lightweight_7d': '轻量7维特征',
-          'image_features': '图像特征映射',
-          'image_similarity': '图片相似度',
-          'ssim': 'SSIM（结构相似性）'
-        }
-        const methodName = response.data?.method_name || methodNameMap[clusterMethod] || '未知方法'
-        message.success(`聚类分析完成（使用${methodName}方法）`)
+        const metricName = response.data?.metric_name || '未知指标'
+        const algorithmName = response.data?.algorithm_name || '未知算法'
+        message.success(`聚类分析完成（使用${metricName}指标和${algorithmName}算法）`)
         await fetchClusterStats()
         setSelectedClusterId(null)
         setClusterFiles([])
@@ -149,17 +148,35 @@ const LutClusterAnalysis = () => {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <Title level={3} style={{ margin: 0 }}>LUT聚类分析</Title>
             <Space>
-              <Text>聚类方法：</Text>
+              <Text>聚类指标：</Text>
               <Select
-                value={clusterMethod}
-                onChange={setClusterMethod}
+                value={clusterMetric}
+                onChange={(value) => {
+                  setClusterMetric(value)
+                  // 如果选择image_similarity、ssim或euclidean，自动切换到层次聚类
+                  if (value === 'image_similarity' || value === 'ssim' || value === 'euclidean') {
+                    setClusterAlgorithm('hierarchical')
+                  }
+                }}
                 disabled={clustering}
                 style={{ width: 180 }}
                 options={[
                   { label: '轻量7维特征', value: 'lightweight_7d' },
                   { label: '图像特征映射', value: 'image_features' },
                   { label: '图片相似度', value: 'image_similarity' },
-                  { label: 'SSIM（结构相似性）', value: 'ssim' }
+                  { label: 'SSIM（结构相似性）', value: 'ssim' },
+                  { label: '像素欧氏距离', value: 'euclidean' }
+                ]}
+              />
+              <Text>聚类算法：</Text>
+              <Select
+                value={clusterAlgorithm}
+                onChange={setClusterAlgorithm}
+                disabled={clustering || clusterMetric === 'image_similarity' || clusterMetric === 'ssim' || clusterMetric === 'euclidean'}
+                style={{ width: 150 }}
+                options={[
+                  { label: 'K-Means', value: 'kmeans' },
+                  { label: '凝聚式层次聚类', value: 'hierarchical' }
                 ]}
               />
               <Text>聚类数：</Text>
@@ -170,6 +187,21 @@ const LutClusterAnalysis = () => {
                 onChange={(value) => setNClusters(value || 5)}
                 disabled={clustering}
               />
+              {(clusterMetric === 'image_similarity' || clusterMetric === 'ssim' || clusterMetric === 'euclidean') && (
+                <>
+                  <Text>复用图片：</Text>
+                  <Select
+                    value={reuseImages}
+                    onChange={setReuseImages}
+                    disabled={clustering}
+                    style={{ width: 100 }}
+                    options={[
+                      { label: '是', value: true },
+                      { label: '否', value: false }
+                    ]}
+                  />
+                </>
+              )}
               <Button
                 type="primary"
                 icon={<ClusterOutlined />}
@@ -291,6 +323,11 @@ const LutClusterAnalysis = () => {
                                     >
                                       {file.original_filename}
                                     </Typography.Text>
+                                    <div style={{ marginBottom: '8px' }}>
+                                      <Text type="secondary" style={{ fontSize: '11px' }}>
+                                        ID: {file.id}
+                                      </Text>
+                                    </div>
                                     <div style={{ marginBottom: '8px' }}>
                                       <Text type="secondary" style={{ fontSize: '12px' }}>
                                         {file.category_name || '未分类'}

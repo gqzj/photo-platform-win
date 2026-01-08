@@ -101,6 +101,13 @@ const ImageSimilarityTest = () => {
       if (similarity >= 30) return '#1890ff'
       if (similarity >= 20) return '#faad14'
       return '#ff4d4f'
+    } else if (method === 'euclidean') {
+      // 欧氏距离：显示的是距离值，越小越好，但这里similarity已经是转换后的相似度（0-1）
+      // 所以使用相同的颜色判断逻辑
+      if (similarity >= 0.8) return '#52c41a' // 绿色 - 非常相似
+      if (similarity >= 0.6) return '#1890ff' // 蓝色 - 较相似
+      if (similarity >= 0.4) return '#faad14' // 橙色 - 一般相似
+      return '#ff4d4f' // 红色 - 不相似
     } else {
       // histogram和ssim: 0-1范围
       if (similarity >= 0.8) return '#52c41a' // 绿色 - 非常相似
@@ -116,6 +123,13 @@ const ImageSimilarityTest = () => {
       if (similarity >= 30) return '质量较好'
       if (similarity >= 20) return '质量一般'
       return '质量较差'
+    } else if (method === 'euclidean') {
+      // 欧氏距离：similarity已经是转换后的相似度（0-1）
+      if (similarity >= 0.8) return '非常相似'
+      if (similarity >= 0.6) return '较相似'
+      if (similarity >= 0.4) return '一般相似'
+      if (similarity >= 0.2) return '不太相似'
+      return '很不相似'
     } else {
       if (similarity >= 0.8) return '非常相似'
       if (similarity >= 0.6) return '较相似'
@@ -129,7 +143,8 @@ const ImageSimilarityTest = () => {
     const descriptions = {
       histogram: '基于灰度直方图特征计算，使用余弦相似度算法。算法先将图片转为灰度图并统一尺寸为256×256，然后提取256维灰度直方图特征，最后计算特征向量的余弦相似度。相似度值范围0-1，越接近1表示两张图片越相似。',
       psnr: 'PSNR（峰值信噪比）是一种基于像素误差的图像质量评估指标。PSNR值以dB为单位，值越大表示图像质量越好。通常PSNR>30dB表示质量较好，>40dB表示质量很好。如果两张图片完全相同，PSNR为无穷大。',
-      ssim: 'SSIM（结构相似性指数）是一种基于感知的图像质量评估指标，考虑了亮度、对比度和结构三个方面的相似性。SSIM值范围0-1，越接近1表示两张图片越相似。SSIM比PSNR更符合人眼视觉感知。'
+      ssim: 'SSIM（结构相似性指数）是一种基于感知的图像质量评估指标，考虑了亮度、对比度和结构三个方面的相似性。SSIM值范围0-1，越接近1表示两张图片越相似。SSIM比PSNR更符合人眼视觉感知。',
+      euclidean: '基于图像像素的欧氏距离计算相似度。算法将两张图片调整为相同尺寸，然后计算所有像素值的欧氏距离（差值平方和的平方根）。距离越小，相似度越高。相似度值范围0-1，越接近1表示两张图片越相似。'
     }
     return descriptions[method] || descriptions.histogram
   }
@@ -153,7 +168,8 @@ const ImageSimilarityTest = () => {
                 options={[
                   { label: '灰度直方图（余弦相似度）', value: 'histogram' },
                   { label: 'PSNR（峰值信噪比）', value: 'psnr' },
-                  { label: 'SSIM（结构相似性）', value: 'ssim' }
+                  { label: 'SSIM（结构相似性）', value: 'ssim' },
+                  { label: '像素欧氏距离', value: 'euclidean' }
                 ]}
               />
             </Space>
@@ -246,7 +262,7 @@ const ImageSimilarityTest = () => {
                   </div>
                   <div style={{ marginBottom: 16 }}>
                     <Text strong style={{ fontSize: 16 }}>
-                      {result.method === 'psnr' ? 'PSNR值：' : '相似度评分：'}
+                      {result.method === 'psnr' ? 'PSNR值：' : result.method === 'euclidean' ? '欧氏距离：' : '相似度评分：'}
                     </Text>
                     <Text
                       strong
@@ -258,11 +274,13 @@ const ImageSimilarityTest = () => {
                     >
                       {result.method === 'psnr' 
                         ? (result.result_value === Infinity ? '∞' : `${result.result_percent} dB`)
+                        : result.method === 'euclidean'
+                        ? `${result.result_value.toFixed(2)}`
                         : `${result.similarity_percent}%`
                       }
                     </Text>
                   </div>
-                  {result.method !== 'psnr' && (
+                  {result.method !== 'psnr' && result.method !== 'euclidean' && (
                     <Progress
                       type="circle"
                       percent={result.similarity_percent}
@@ -270,6 +288,13 @@ const ImageSimilarityTest = () => {
                       format={(percent) => `${percent}%`}
                       style={{ marginBottom: 16 }}
                     />
+                  )}
+                  {result.method === 'euclidean' && (
+                    <div style={{ marginBottom: 16 }}>
+                      <Text type="secondary" style={{ fontSize: 14 }}>
+                        相似度评分：{result.similarity_percent}%
+                      </Text>
+                    </div>
                   )}
                   <div>
                     <Text

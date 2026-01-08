@@ -10,6 +10,7 @@ class LutCluster(db.Model):
     cluster_id = db.Column(db.Integer, nullable=False, comment='聚类ID（0, 1, 2, ...）')
     cluster_name = db.Column(db.String(100), comment='聚类名称（可选）')
     lut_file_id = db.Column(db.Integer, db.ForeignKey('lut_files.id', ondelete='CASCADE'), nullable=False, comment='LUT文件ID')
+    distance_to_center = db.Column(db.Float, nullable=True, comment='到聚类中心的距离')
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.now, comment='创建时间')
     
     # 关联关系
@@ -26,6 +27,7 @@ class LutCluster(db.Model):
             'cluster_id': self.cluster_id,
             'cluster_name': self.cluster_name,
             'lut_file_id': self.lut_file_id,
+            'distance_to_center': self.distance_to_center,
             'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S') if self.created_at else None
         }
 

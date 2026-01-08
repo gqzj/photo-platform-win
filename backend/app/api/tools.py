@@ -107,6 +107,42 @@ def _calculate_psnr(img_path1, img_path2):
     
     return float(psnr)
 
+def _calculate_euclidean_distance(img_path1, img_path2):
+    """
+    计算两张图片的欧氏距离（基于像素值）
+    :param img_path1: 第一张图片路径
+    :param img_path2: 第二张图片路径
+    :return: 相似度值（0-1，越接近1越相似）
+    """
+    # 读取图片
+    img1 = cv2.imread(img_path1)
+    img2 = cv2.imread(img_path2)
+    
+    if img1 is None or img2 is None:
+        raise ValueError("无法读取图片")
+    
+    # 确保两张图片尺寸相同
+    if img1.shape != img2.shape:
+        img2 = cv2.resize(img2, (img1.shape[1], img1.shape[0]), interpolation=cv2.INTER_LINEAR)
+    
+    # 转换为float64类型
+    img1 = img1.astype(np.float64)
+    img2 = img2.astype(np.float64)
+    
+    # 计算欧氏距离（所有像素的差值平方和的平方根）
+    pixel_diff = img1 - img2
+    euclidean_distance = np.sqrt(np.sum(pixel_diff ** 2))
+    
+    # 将距离转换为相似度（0-1范围）
+    # 最大可能距离：假设所有像素都是最大差值（255），对于RGB图像
+    max_distance = np.sqrt(img1.shape[0] * img1.shape[1] * img1.shape[2] * (255 ** 2))
+    
+    # 相似度 = 1 - (距离 / 最大距离)
+    # 使用归一化，确保结果在0-1范围内
+    similarity = max(0.0, min(1.0, 1.0 - (euclidean_distance / max_distance)))
+    
+    return float(similarity), float(euclidean_distance)
+
 def _calculate_ssim(img_path1, img_path2):
     """
     计算两张图片的SSIM（结构相似性指数）
@@ -179,8 +215,8 @@ def calculate_image_similarity():
         
         # 获取计算方法参数（默认为histogram）
         method = request.form.get('method', 'histogram')
-        if method not in ['histogram', 'psnr', 'ssim']:
-            return jsonify({'code': 400, 'message': '不支持的计算方法，支持的方法：histogram（灰度直方图）、psnr（峰值信噪比）、ssim（结构相似性）'}), 400
+        if method not in ['histogram', 'psnr', 'ssim', 'euclidean']:
+            return jsonify({'code': 400, 'message': '不支持的计算方法，支持的方法：histogram（灰度直方图）、psnr（峰值信噪比）、ssim（结构相似性）、euclidean（像素欧氏距离）'}), 400
         
         # 创建临时文件保存上传的图片
         temp_dir = tempfile.gettempdir()
@@ -233,6 +269,12 @@ def calculate_image_similarity():
                     result_value = ssim_value
                     result_percent = round(similarity_percent, 2)
                     method_name = 'SSIM（结构相似性）'
+                elif method == 'euclidean':
+                    similarity, euclidean_distance = _calculate_euclidean_distance(temp_file1, temp_file2)
+                    similarity_percent = similarity * 100
+                    result_value = euclidean_distance  # 显示原始距离值
+                    result_percent = round(similarity_percent, 2)
+                    method_name = '像素欧氏距离'
             except Exception as e:
                 current_app.logger.error(f"计算相似度失败: {str(e)}")
                 return jsonify({'code': 500, 'message': f'计算相似度失败: {str(e)}'}), 500

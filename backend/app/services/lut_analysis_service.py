@@ -660,4 +660,135 @@ class LutAnalysisService:
             import traceback
             logger.error(traceback.format_exc())
             return None
+    
+    def calculate_euclidean_distance_matrix(self, image_paths, check_interrupted=None):
+        """
+        计算多张图片之间的欧氏距离矩阵（基于像素值）
+        
+        Args:
+            image_paths: 图片路径列表
+            check_interrupted: 可选的检查中断回调函数
+        
+        Returns:
+            距离矩阵（numpy数组），值越小表示越相似
+        """
+        if check_interrupted and check_interrupted():
+            raise InterruptedError("距离计算被用户中断")
+        
+        try:
+            import cv2
+            
+            n = len(image_paths)
+            distance_matrix = np.zeros((n, n))  # 初始化距离矩阵
+            
+            # 优化：先统一预处理所有图片，避免重复读取和resize
+            logger.info(f"开始预处理 {n} 张图片（欧氏距离）...")
+            processed_images = []
+            target_size = (256, 256)  # 统一尺寸，加快计算速度
+            
+            for i, img_path in enumerate(image_paths):
+                if check_interrupted and check_interrupted():
+                    raise InterruptedError("距离计算被用户中断")
+                
+                try:
+                    # 读取图片（RGB，不转换为灰度）
+                    img = cv2.imread(img_path)
+                    if img is None:
+                        logger.warning(f"无法读取图片: {img_path}")
+                        processed_images.append(None)
+                        continue
+                    
+                    # 统一尺寸（加快后续计算）
+                    img_resized = cv2.resize(img, target_size, interpolation=cv2.INTER_LINEAR)
+                    processed_images.append(img_resized)
+                    
+                    if (i + 1) % 10 == 0:
+                        logger.info(f"已预处理 {i + 1}/{n} 张图片")
+                except Exception as e:
+                    logger.warning(f"预处理图片失败 {img_path}: {e}")
+                    processed_images.append(None)
+            
+            logger.info(f"图片预处理完成，开始计算欧氏距离矩阵（向量化计算）...")
+            
+            # 过滤掉无效图片，并记录有效索引
+            valid_indices = []
+            valid_images = []
+            for i, img in enumerate(processed_images):
+                if img is not None:
+                    valid_indices.append(i)
+                    valid_images.append(img)
+            
+            if len(valid_images) == 0:
+                logger.error("没有有效的图片可以计算距离")
+                return None
+            
+            # 将所有有效图片转换为向量（展平）
+            # 使用float32而不是float64以加快计算速度
+            image_vectors = []
+            for img in valid_images:
+                img_flat = img.astype(np.float32).flatten()
+                image_vectors.append(img_flat)
+            
+            # 转换为numpy数组（每行是一个图片向量）
+            image_array = np.array(image_vectors)  # shape: (n_valid, height * width * channels)
+            
+            logger.info(f"开始向量化计算欧氏距离矩阵（{len(valid_images)} 张有效图片）...")
+            
+            # 使用向量化计算所有对之间的欧氏距离
+            # 方法：使用numpy的广播机制
+            # distance[i,j] = sqrt(sum((image_array[i] - image_array[j])^2))
+            # 可以优化为：distance[i,j] = sqrt(sum((image_array[i] - image_array[j])^2))
+            # 使用 (a-b)^2 = a^2 + b^2 - 2ab 的展开形式可以进一步优化
+            
+            # 计算每张图片的平方和（用于优化）
+            squared_norms = np.sum(image_array ** 2, axis=1)  # shape: (n_valid,)
+            
+            # 使用向量化计算距离矩阵
+            # distance[i,j] = sqrt(sum((image_array[i] - image_array[j])^2))
+            # = sqrt(sum(image_array[i]^2) + sum(image_array[j]^2) - 2*sum(image_array[i]*image_array[j]))
+            # = sqrt(squared_norms[i] + squared_norms[j] - 2*dot(image_array[i], image_array[j]))
+            
+            # 计算点积矩阵
+            dot_product_matrix = np.dot(image_array, image_array.T)  # shape: (n_valid, n_valid)
+            
+            # 使用广播计算距离矩阵
+            # 对于每对(i,j)，计算 sqrt(squared_norms[i] + squared_norms[j] - 2*dot_product_matrix[i,j])
+            squared_norms_expanded_i = squared_norms[:, np.newaxis]  # shape: (n_valid, 1)
+            squared_norms_expanded_j = squared_norms[np.newaxis, :]  # shape: (1, n_valid)
+            
+            # 计算距离的平方
+            distance_squared = squared_norms_expanded_i + squared_norms_expanded_j - 2 * dot_product_matrix
+            
+            # 处理数值误差（可能产生负值）
+            distance_squared = np.maximum(distance_squared, 0)
+            
+            # 计算距离（开平方根）
+            valid_distance_matrix = np.sqrt(distance_squared)
+            
+            # 将结果填充到完整的距离矩阵中
+            for idx_i, i in enumerate(valid_indices):
+                for idx_j, j in enumerate(valid_indices):
+                    if i == j:
+                        distance_matrix[i, j] = 0.0
+                    else:
+                        distance_matrix[i, j] = float(valid_distance_matrix[idx_i, idx_j])
+            
+            # 对于无效图片，设置距离为无穷大
+            for i in range(n):
+                if i not in valid_indices:
+                    for j in range(n):
+                        if j != i:
+                            distance_matrix[i, j] = float('inf')
+                            distance_matrix[j, i] = float('inf')
+            
+            logger.info(f"计算欧氏距离矩阵完成: {distance_matrix.shape}")
+            return distance_matrix
+            
+        except InterruptedError:
+            raise
+        except Exception as e:
+            logger.error(f"计算欧氏距离矩阵失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
 

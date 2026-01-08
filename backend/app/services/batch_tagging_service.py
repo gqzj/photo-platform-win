@@ -144,17 +144,27 @@ class BatchTaggingService:
                 }
             
             # 获取筛选条件
-            filter_keywords = []
+            filter_keywords = None
             if task.filter_keywords:
                 try:
-                    filter_keywords = json.loads(task.filter_keywords) if isinstance(task.filter_keywords, str) else task.filter_keywords
+                    keywords = json.loads(task.filter_keywords) if isinstance(task.filter_keywords, str) else task.filter_keywords
+                    if isinstance(keywords, list):
+                        keywords = [k.strip() for k in keywords if k.strip()]
+                        
+                        # 检查是否包含"全部"
+                        if '全部' in keywords:
+                            logger.info(f"关键字包含'全部'，将处理所有关键字的图片")
+                            filter_keywords = None  # 返回None表示处理所有关键字
+                        else:
+                            filter_keywords = keywords
                 except Exception as e:
                     logger.warning(f"解析筛选关键字失败: {e}")
             
             # 查询符合条件的图片
             query = Image.query.filter(Image.status == 'active')
             
-            if filter_keywords:
+            # 如果 filter_keywords 为 None，表示处理所有关键字（"全部"），不添加筛选条件
+            if filter_keywords is not None and len(filter_keywords) > 0:
                 # 如果有关键字筛选，使用OR条件
                 keyword_filters = db.or_(*[Image.keyword.like(f'%{kw}%') for kw in filter_keywords])
                 query = query.filter(keyword_filters)
@@ -162,7 +172,8 @@ class BatchTaggingService:
             images = query.all()
             total_count = len(images)
             
-            logger.info(f"打标任务 {task_id}: 找到 {total_count} 张符合条件的图片")
+            keyword_info = filter_keywords if filter_keywords is not None else '全部'
+            logger.info(f"打标任务 {task_id}: 关键字={keyword_info}, 找到 {total_count} 张符合条件的图片")
             
             # 更新任务总数（如果是重启中断的任务，保持总数不变）
             if task.status != 'interrupted':
