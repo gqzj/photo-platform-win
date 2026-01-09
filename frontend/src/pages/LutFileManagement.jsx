@@ -516,7 +516,8 @@ const LutFileManagement = () => {
       title: '原始文件名',
       dataIndex: 'original_filename',
       key: 'original_filename',
-      ellipsis: true
+      ellipsis: true,
+      width: 200
     },
     {
       title: '文件大小',

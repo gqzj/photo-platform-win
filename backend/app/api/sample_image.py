@@ -438,10 +438,19 @@ def apply_luts_to_image_task(application_id, sample_image_id):
                         if not lut_name_clean:
                             lut_name_clean = f"lut_{lut_file.id}"
                         
-                        # 生成文件名：类别名_lut文件名_lut ID.jpg
+                        # 为每个样本图片创建独立的目录（以样本图片ID命名）
+                        sample_image_dir = os.path.join(applied_storage_dir, str(sample_image_id))
+                        os.makedirs(sample_image_dir, exist_ok=True)
+                        
+                        # 生成文件名：类别名_lut文件名_lut ID.jpg（简化文件名，因为已经在独立目录中）
                         output_filename = f"{category_name_clean}_{lut_name_clean}_{lut_file.id}.jpg"
-                        logger.info(f"生成文件名: {output_filename} (类别名清理后: '{category_name_clean}', LUT名清理后: '{lut_name_clean}')")
-                        output_path = os.path.join(applied_storage_dir, output_filename)
+                        logger.info(f"生成文件名: {output_filename} (样本图片ID: {sample_image_id}, 类别名清理后: '{category_name_clean}', LUT名清理后: '{lut_name_clean}')")
+                        
+                        # 完整路径：存储目录/样本图片ID/文件名
+                        output_path = os.path.join(sample_image_dir, output_filename)
+                        
+                        # 存储路径（相对路径，用于数据库存储）：样本图片ID/文件名
+                        storage_path = f"{sample_image_id}/{output_filename}"
                         
                         # 应用LUT
                         logger.info(f"开始应用LUT: {lut_file.original_filename} -> {output_filename}")
@@ -464,7 +473,7 @@ def apply_luts_to_image_task(application_id, sample_image_id):
                                 lut_file_id=lut_file.id,
                                 sample_image_id=sample_image_id,
                                 filename=output_filename,
-                                storage_path=output_filename,
+                                storage_path=storage_path,  # 使用相对路径：样本图片ID/文件名
                                 file_size=file_size,
                                 width=output_img.width,
                                 height=output_img.height,
