@@ -50,6 +50,7 @@ const LutFileManagement = () => {
   const [batchAnalyzeStatus, setBatchAnalyzeStatus] = useState(null)
   const [analyzePollingInterval, setAnalyzePollingInterval] = useState(null)
   const previousStatusRef = useRef(null) // 用于跟踪上一次的状态，避免重复提示
+  const isInitialLoadRef = useRef(true) // 用于标记是否是首次加载
 
   // 获取分类列表
   const fetchCategories = async () => {
@@ -373,22 +374,26 @@ const LutFileManagement = () => {
       if (response.code === 200) {
         const newStatus = response.data
         const previousStatus = previousStatusRef.current
+        const isInitialLoad = isInitialLoadRef.current
         
         // 如果任务已完成或失败，停止轮询
         if (newStatus && (newStatus.status === 'completed' || newStatus.status === 'failed')) {
           stopAnalyzePolling()
           
           // 只在状态从非 completed/failed 变为 completed/failed 时才显示提示
-          if (newStatus.status === 'completed') {
-            // 检查是否是首次变为 completed 状态
-            if (previousStatus !== 'completed') {
-              message.success('批量分析完成')
-              fetchData(pagination.current, pagination.pageSize)
-            }
-          } else if (newStatus.status === 'failed') {
-            // 检查是否是首次变为 failed 状态
-            if (previousStatus !== 'failed') {
-              message.error('批量分析失败：' + (newStatus.error_message || '未知错误'))
+          // 首次加载时，即使状态是 completed/failed，也不显示提示
+          if (!isInitialLoad) {
+            if (newStatus.status === 'completed') {
+              // 检查是否是首次变为 completed 状态
+              if (previousStatus !== 'completed') {
+                message.success('批量分析完成')
+                fetchData(pagination.current, pagination.pageSize)
+              }
+            } else if (newStatus.status === 'failed') {
+              // 检查是否是首次变为 failed 状态
+              if (previousStatus !== 'failed') {
+                message.error('批量分析失败：' + (newStatus.error_message || '未知错误'))
+              }
             }
           }
         }
@@ -397,6 +402,11 @@ const LutFileManagement = () => {
         setBatchAnalyzeStatus(newStatus)
         if (newStatus) {
           previousStatusRef.current = newStatus.status
+        }
+        
+        // 首次加载完成后，标记为非首次加载
+        if (isInitialLoad) {
+          isInitialLoadRef.current = false
         }
       }
     } catch (error) {

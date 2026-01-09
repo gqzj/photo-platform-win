@@ -579,6 +579,27 @@ def batch_analyze_lut_files_task(task_id, skip_analyzed=True):
                 storage_dir = get_lut_storage_dir()
                 analysis_service = LutAnalysisService()
                 
+                # 查找标准测试图（standard.png）
+                current_file = os.path.abspath(__file__)
+                backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
+                standard_image_path = os.path.join(backend_dir, 'standard.png')
+                
+                if not os.path.exists(standard_image_path):
+                    logger.error(f"标准测试图不存在: {standard_image_path}")
+                    task.status = 'failed'
+                    task.error_message = f'标准测试图不存在: standard.png，请确保backend目录下有该文件'
+                    task.finished_at = datetime.now()
+                    db.session.commit()
+                    return
+                
+                # 导入LUT应用服务
+                from app.services.lut_application_service import LutApplicationService
+                lut_service = LutApplicationService()
+                
+                # 创建临时目录用于存储应用LUT后的图片
+                temp_dir = os.path.join(storage_dir, 'temp_analysis')
+                os.makedirs(temp_dir, exist_ok=True)
+                
                 def check_interrupted():
                     """检查任务是否被中断"""
                     db.session.expire(task)
@@ -625,17 +646,81 @@ def batch_analyze_lut_files_task(task_id, skip_analyzed=True):
                             db.session.commit()
                             return
                         
-                        # 分析LUT文件（传入中断检查函数）
+                        # 使用标准测试图进行分析
+                        # 生成临时输出图片路径
+                        output_image_path = os.path.join(temp_dir, f"analysis_{lut_file.id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg")
+                        
+                        # 应用LUT到标准测试图
                         try:
-                            analysis_result = analysis_service.analyze_lut(file_path, check_interrupted=check_interrupted)
-                        except InterruptedError:
-                            # 分析过程中被中断
-                            logger.info(f"分析过程中被中断，停止处理。已处理: {processed_count}/{total_count}")
-                            task.status = 'failed'
-                            task.error_message = f"任务被用户中断。已处理: {processed_count}/{total_count}, 成功: {success_count}, 失败: {failed_count}"
-                            task.finished_at = datetime.now()
+                            success, error_msg = lut_service.apply_lut_to_image(
+                                standard_image_path,
+                                file_path,
+                                output_image_path
+                            )
+                            
+                            if not success:
+                                logger.warning(f"应用LUT到标准图失败: {lut_file.original_filename}, 错误: {error_msg}")
+                                failed_count += 1
+                                processed_count += 1
+                                task.processed_file_count = processed_count
+                                task.failed_count = failed_count
+                                db.session.commit()
+                                # 检查中断（应用LUT失败后）
+                                if check_interrupted():
+                                    logger.info(f"任务被中断，停止处理。已处理: {processed_count}/{total_count}")
+                                    task.status = 'failed'
+                                    task.error_message = f"任务被用户中断。已处理: {processed_count}/{total_count}, 成功: {success_count}, 失败: {failed_count}"
+                                    task.finished_at = datetime.now()
+                                    db.session.commit()
+                                    return
+                                continue
+                            
+                            # 分析结果图（传入中断检查函数）
+                            try:
+                                analysis_result = analysis_service.analyze_image(output_image_path, check_interrupted=check_interrupted)
+                            except InterruptedError:
+                                # 分析过程中被中断
+                                logger.info(f"分析过程中被中断，停止处理。已处理: {processed_count}/{total_count}")
+                                # 删除临时文件
+                                if os.path.exists(output_image_path):
+                                    try:
+                                        os.remove(output_image_path)
+                                    except:
+                                        pass
+                                task.status = 'failed'
+                                task.error_message = f"任务被用户中断。已处理: {processed_count}/{total_count}, 成功: {success_count}, 失败: {failed_count}"
+                                task.finished_at = datetime.now()
+                                db.session.commit()
+                                return
+                            
+                            # 删除临时输出图片
+                            if os.path.exists(output_image_path):
+                                try:
+                                    os.remove(output_image_path)
+                                except:
+                                    pass
+                        except Exception as e:
+                            logger.error(f"应用LUT或分析图片失败: {lut_file.original_filename}, 错误: {str(e)}")
+                            # 删除临时文件（如果存在）
+                            if os.path.exists(output_image_path):
+                                try:
+                                    os.remove(output_image_path)
+                                except:
+                                    pass
+                            failed_count += 1
+                            processed_count += 1
+                            task.processed_file_count = processed_count
+                            task.failed_count = failed_count
                             db.session.commit()
-                            return
+                            # 检查中断（异常处理后）
+                            if check_interrupted():
+                                logger.info(f"任务被中断，停止处理。已处理: {processed_count}/{total_count}")
+                                task.status = 'failed'
+                                task.error_message = f"任务被用户中断。已处理: {processed_count}/{total_count}, 成功: {success_count}, 失败: {failed_count}"
+                                task.finished_at = datetime.now()
+                                db.session.commit()
+                                return
+                            continue
                         
                         # 检查中断（分析文件后）
                         if check_interrupted():
@@ -738,6 +823,16 @@ def batch_analyze_lut_files_task(task_id, skip_analyzed=True):
                     task.error_message = f"成功: {success_count}, 失败: {failed_count}"
                 db.session.commit()
                 logger.info(f"批量分析LUT文件完成: 成功 {success_count}, 失败 {failed_count}")
+                
+                # 清理临时目录（可选，保留以便调试）
+                # 如果需要清理，可以取消下面的注释
+                # try:
+                #     import shutil
+                #     if os.path.exists(temp_dir):
+                #         shutil.rmtree(temp_dir)
+                #         logger.info(f"已清理临时目录: {temp_dir}")
+                # except Exception as e:
+                #     logger.warning(f"清理临时目录失败: {e}")
                 
             except Exception as e:
                 logger.error(f"批量分析LUT文件任务内层异常: {str(e)}")
@@ -1318,6 +1413,9 @@ def cluster_lut_files():
         for file_id, cluster_id in zip(file_ids, cluster_labels):
             cluster_record = LutCluster(
                 cluster_id=int(cluster_id),
+                parent_cluster_id=None,  # 顶级聚类
+                path=str(cluster_id),  # 顶级聚类的path就是cluster_id
+                level=0,  # 顶级聚类的level为0
                 lut_file_id=file_id,
                 distance_to_center=file_distances.get(file_id)
             )
@@ -1420,51 +1518,45 @@ def get_cluster_stats():
         cluster_stats = {}
         total_files = 0
         
-        # 辅助函数：递归构建完整的聚类显示ID
-        def build_display_id(cluster_id, parent_cluster_id, visited=None):
-            """递归构建完整的聚类显示ID（支持多级子聚类）"""
-            if visited is None:
-                visited = set()
-            
-            if parent_cluster_id is None:
-                return str(cluster_id)
-            
-            # 防止循环引用
-            key = (cluster_id, parent_cluster_id)
-            if key in visited:
-                return str(cluster_id)
-            visited.add(key)
-            
-            # 查找父聚类的信息
-            parent_stat = None
-            for stat in stats:
-                stat_cluster_id = stat.cluster_id if hasattr(stat, 'cluster_id') else stat[0]
-                stat_parent_id = stat.parent_cluster_id if hasattr(stat, 'parent_cluster_id') else (stat[1] if len(stat) > 1 else None)
-                if stat_cluster_id == parent_cluster_id:
-                    parent_stat = stat
-                    break
-            
-            if parent_stat:
-                parent_parent_id = parent_stat.parent_cluster_id if hasattr(parent_stat, 'parent_cluster_id') else (parent_stat[1] if len(parent_stat) > 1 else None)
-                parent_display = build_display_id(parent_cluster_id, parent_parent_id, visited)
-                return f"{parent_display}-{cluster_id}"
-            else:
-                # 如果找不到父聚类信息，直接使用parent_cluster_id
-                return f"{parent_cluster_id}-{cluster_id}"
+        # 查询时同时获取path字段和cluster_name
+        stats_with_path = db.session.query(
+            LutCluster.cluster_id,
+            LutCluster.parent_cluster_id,
+            LutCluster.path,
+            LutCluster.level,
+            LutCluster.cluster_name,
+            func.count(LutCluster.id).label('file_count')
+        ).filter(
+            LutCluster.distilled == False
+        ).group_by(LutCluster.cluster_id, LutCluster.parent_cluster_id, LutCluster.path, LutCluster.level, LutCluster.cluster_name).all()
         
-        for stat in stats:
+        for stat in stats_with_path:
             # 兼容不同的访问方式
             cluster_id = stat.cluster_id if hasattr(stat, 'cluster_id') else stat[0]
             parent_cluster_id = stat.parent_cluster_id if hasattr(stat, 'parent_cluster_id') else (stat[1] if len(stat) > 1 else None)
-            file_count = stat.file_count if hasattr(stat, 'file_count') else stat[2] if len(stat) > 2 else stat[1]
+            path = stat.path if hasattr(stat, 'path') else (stat[2] if len(stat) > 2 else None)
+            level = stat.level if hasattr(stat, 'level') else (stat[3] if len(stat) > 3 else None)
+            cluster_name = stat.cluster_name if hasattr(stat, 'cluster_name') else (stat[4] if len(stat) > 4 else None)
+            file_count = stat.file_count if hasattr(stat, 'file_count') else stat[5] if len(stat) > 5 else stat[1]
             
-            # 生成显示用的聚类编号（支持多级子聚类）
-            display_id = build_display_id(cluster_id, parent_cluster_id)
+            # 生成显示用的聚类编号（优先使用path字段）
+            if path:
+                display_id = path
+            else:
+                # 如果没有path，使用旧的逻辑（向后兼容）
+                if parent_cluster_id is None:
+                    display_id = str(cluster_id)
+                else:
+                    display_id = f"{parent_cluster_id}-{cluster_id}"
             
-            cluster_stats[display_id] = file_count
+            # 存储聚类信息（包含名称）
+            cluster_stats[display_id] = {
+                'file_count': file_count,
+                'cluster_name': cluster_name
+            }
             total_files += file_count
         
-        total_clusters = len(stats)
+        total_clusters = len(stats_with_path)
         
         # 尝试从最新的快照获取聚类指标和算法信息
         metric = None
@@ -1516,45 +1608,170 @@ def get_cluster_stats():
         current_app.logger.error(f"获取聚类统计失败: {error_detail}")
         return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
 
+@bp.route('/cluster/<cluster_id>', methods=['PUT', 'PATCH'])
+def update_cluster(cluster_id):
+    """更新聚类信息（如名称）
+    支持多级层级聚类：cluster_id可以是"0"（顶级聚类）或"12-6-1"（多级子聚类）
+    """
+    try:
+        data = request.get_json() or {}
+        cluster_name = data.get('cluster_name', '').strip()
+        
+        # 使用path字段直接查询，避免递归查找
+        cluster_path = str(cluster_id)
+        
+        # 查找聚类记录（任意一条记录即可，因为同一聚类的所有记录共享名称）
+        cluster_record = LutCluster.query.filter(
+            LutCluster.path == cluster_path,
+            LutCluster.distilled == False
+        ).first()
+        
+        if not cluster_record:
+            # 如果找不到，可能是旧数据没有path字段，使用旧的查询方式
+            # 解析cluster_id，支持多级层级聚类格式（如"12-6-1"）
+            def find_cluster_by_display_id(display_id):
+                """根据显示ID（如"12-6-1"）查找对应的数据库记录，返回(cluster_id, parent_cluster_id)"""
+                if '-' not in str(display_id):
+                    try:
+                        cluster_id = int(display_id)
+                        return (cluster_id, None)
+                    except ValueError:
+                        return None
+                
+                parts = str(display_id).split('-')
+                if len(parts) < 2:
+                    return None
+                
+                try:
+                    final_cluster_id = int(parts[-1])
+                    parent_display_id = '-'.join(parts[:-1])
+                    parent_info = find_cluster_by_display_id(parent_display_id)
+                    if parent_info is None:
+                        return None
+                    parent_cluster_id, _ = parent_info
+                    return (final_cluster_id, parent_cluster_id)
+                except ValueError:
+                    return None
+            
+            cluster_info = find_cluster_by_display_id(cluster_id)
+            if cluster_info is None:
+                return jsonify({'code': 400, 'message': '无效的聚类ID格式或找不到对应的聚类'}), 400
+            
+            actual_cluster_id, parent_cluster_id = cluster_info
+            
+            # 使用旧的查询方式
+            if parent_cluster_id is None:
+                cluster_record = LutCluster.query.filter(
+                    LutCluster.cluster_id == actual_cluster_id,
+                    LutCluster.parent_cluster_id.is_(None)
+                ).first()
+            else:
+                cluster_record = LutCluster.query.filter(
+                    LutCluster.cluster_id == actual_cluster_id,
+                    LutCluster.parent_cluster_id == parent_cluster_id
+                ).first()
+        
+        if not cluster_record:
+            return jsonify({'code': 404, 'message': '找不到聚类'}), 404
+        
+        # 更新该聚类的所有记录的cluster_name
+        # 使用path字段更新（更精确）
+        if cluster_record.path:
+            updated_count = LutCluster.query.filter(
+                LutCluster.path == cluster_path
+            ).update({
+                'cluster_name': cluster_name if cluster_name else None
+            }, synchronize_session=False)
+        else:
+            # 使用旧的查询方式
+            if parent_cluster_id is None:
+                updated_count = LutCluster.query.filter(
+                    LutCluster.cluster_id == actual_cluster_id,
+                    LutCluster.parent_cluster_id.is_(None)
+                ).update({
+                    'cluster_name': cluster_name if cluster_name else None
+                }, synchronize_session=False)
+            else:
+                updated_count = LutCluster.query.filter(
+                    LutCluster.cluster_id == actual_cluster_id,
+                    LutCluster.parent_cluster_id == parent_cluster_id
+                ).update({
+                    'cluster_name': cluster_name if cluster_name else None
+                }, synchronize_session=False)
+        
+        db.session.commit()
+        
+        return jsonify({
+            'code': 200,
+            'message': '更新成功',
+            'data': {
+                'updated_count': updated_count,
+                'cluster_id': str(cluster_id),
+                'cluster_name': cluster_name
+            }
+        })
+    except Exception as e:
+        db.session.rollback()
+        error_detail = traceback.format_exc()
+        current_app.logger.error(f"更新聚类失败: {error_detail}")
+        return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
+
 @bp.route('/cluster/<cluster_id>', methods=['DELETE'])
 def delete_cluster(cluster_id):
     """删除指定聚类
-    支持层级聚类：cluster_id可以是"0"（顶级聚类）或"0-1"（子聚类，格式：父编号-自编号）
+    支持多级层级聚类：cluster_id可以是"0"（顶级聚类）或"12-6-1"（多级子聚类）
     注意：删除顶级聚类时，不会删除其子聚类
     """
     try:
-        # 解析cluster_id
-        if '-' in str(cluster_id):
-            # 子聚类格式：parent_id-cluster_id
-            parts = str(cluster_id).split('-')
-            if len(parts) != 2:
-                return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
-            try:
-                parent_cluster_id = int(parts[0])
-                actual_cluster_id = int(parts[1])
-            except ValueError:
-                return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
-        else:
-            # 顶级聚类
-            try:
-                actual_cluster_id = int(cluster_id)
-                parent_cluster_id = None
-            except ValueError:
-                return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
+        # 使用path字段直接查询，避免递归查找
+        cluster_path = str(cluster_id)
         
-        # 删除聚类记录
-        if parent_cluster_id is None:
-            # 删除顶级聚类（不删除其子聚类）
+        # 查找匹配的聚类记录
+        cluster_record = LutCluster.query.filter(
+            LutCluster.path == cluster_path,
+            LutCluster.distilled == False
+        ).first()
+        
+        if cluster_record:
+            # 使用path字段删除（更精确）
+            # 只删除指定path的记录，不删除其子聚类
             deleted_count = LutCluster.query.filter(
-                LutCluster.cluster_id == actual_cluster_id,
-                LutCluster.parent_cluster_id.is_(None)
+                LutCluster.path == cluster_path
             ).delete(synchronize_session=False)
         else:
-            # 只删除指定的子聚类
-            deleted_count = LutCluster.query.filter(
-                LutCluster.cluster_id == actual_cluster_id,
-                LutCluster.parent_cluster_id == parent_cluster_id
-            ).delete(synchronize_session=False)
+            # 如果找不到，可能是旧数据没有path字段，使用旧的查询方式
+            # 解析cluster_id
+            if '-' in str(cluster_id):
+                # 子聚类格式：parent_id-cluster_id
+                parts = str(cluster_id).split('-')
+                if len(parts) != 2:
+                    return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
+                try:
+                    parent_cluster_id = int(parts[0])
+                    actual_cluster_id = int(parts[1])
+                except ValueError:
+                    return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
+            else:
+                # 顶级聚类
+                try:
+                    actual_cluster_id = int(cluster_id)
+                    parent_cluster_id = None
+                except ValueError:
+                    return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
+            
+            # 删除聚类记录
+            if parent_cluster_id is None:
+                # 删除顶级聚类（不删除其子聚类）
+                deleted_count = LutCluster.query.filter(
+                    LutCluster.cluster_id == actual_cluster_id,
+                    LutCluster.parent_cluster_id.is_(None)
+                ).delete(synchronize_session=False)
+            else:
+                # 只删除指定的子聚类
+                deleted_count = LutCluster.query.filter(
+                    LutCluster.cluster_id == actual_cluster_id,
+                    LutCluster.parent_cluster_id == parent_cluster_id
+                ).delete(synchronize_session=False)
         
         db.session.commit()
         
@@ -1587,36 +1804,67 @@ def get_cluster_files(cluster_id):
         from sklearn.preprocessing import StandardScaler
         from sklearn.metrics import pairwise_distances
         
-        # 解析cluster_id，支持层级聚类格式（父编号-自编号）
-        parent_cluster_id = None
-        actual_cluster_id = None
+        # 使用path字段直接查询，避免递归查找
+        cluster_path = str(cluster_id)
         
-        if '-' in str(cluster_id):
-            # 子聚类格式：父编号-自编号
-            parts = str(cluster_id).split('-')
-            if len(parts) == 2:
-                parent_cluster_id = int(parts[0])
-                actual_cluster_id = int(parts[1])
-            else:
-                return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
-        else:
-            # 顶级聚类
-            actual_cluster_id = int(cluster_id)
+        # 查找匹配的聚类记录
+        cluster_record = LutCluster.query.filter(
+            LutCluster.path == cluster_path,
+            LutCluster.distilled == False
+        ).first()
         
         # 查询指定聚类的所有LUT文件（排除已蒸馏的文件）
-        # 先获取唯一的文件ID列表，避免重复记录
+        # 优先使用path字段查询，如果没有path则使用旧的查询方式
         from sqlalchemy import distinct
-        cluster_query = db.session.query(distinct(LutCluster.lut_file_id)).filter(
-            LutCluster.cluster_id == actual_cluster_id,
+        if cluster_record and cluster_record.path:
+            # 使用path字段查询（更精确）
+            cluster_query = db.session.query(distinct(LutCluster.lut_file_id)).filter(
+                LutCluster.path == cluster_path,
             LutCluster.distilled == False
-        )
-        
-        # 如果是子聚类，需要匹配parent_cluster_id
-        if parent_cluster_id is not None:
-            cluster_query = cluster_query.filter(LutCluster.parent_cluster_id == parent_cluster_id)
+            )
         else:
-            # 顶级聚类，parent_cluster_id应该为NULL
-            cluster_query = cluster_query.filter(LutCluster.parent_cluster_id.is_(None))
+            # 使用旧的查询方式（向后兼容）
+            # 解析cluster_id，支持多级层级聚类格式（如"12-6-1"）
+            def find_cluster_by_display_id(display_id):
+                """根据显示ID（如"12-6-1"）查找对应的数据库记录，返回(cluster_id, parent_cluster_id)"""
+                if '-' not in str(display_id):
+                    try:
+                        cluster_id = int(display_id)
+                        return (cluster_id, None)
+                    except ValueError:
+                        return None
+                
+                parts = str(display_id).split('-')
+                if len(parts) < 2:
+                    return None
+                
+                try:
+                    final_cluster_id = int(parts[-1])
+                    parent_display_id = '-'.join(parts[:-1])
+                    parent_info = find_cluster_by_display_id(parent_display_id)
+                    if parent_info is None:
+                        return None
+                    parent_cluster_id, _ = parent_info
+                    return (final_cluster_id, parent_cluster_id)
+                except ValueError:
+                    return None
+            
+            cluster_info = find_cluster_by_display_id(cluster_id)
+            if cluster_info is None:
+                return jsonify({'code': 400, 'message': '无效的聚类ID格式或找不到对应的聚类'}), 400
+            
+            actual_cluster_id, parent_cluster_id = cluster_info
+            
+            cluster_query = db.session.query(distinct(LutCluster.lut_file_id)).filter(
+                LutCluster.cluster_id == actual_cluster_id,
+                LutCluster.distilled == False
+            )
+            # 如果是子聚类，需要匹配parent_cluster_id
+            if parent_cluster_id is not None:
+                cluster_query = cluster_query.filter(LutCluster.parent_cluster_id == parent_cluster_id)
+            else:
+                # 顶级聚类，parent_cluster_id应该为NULL
+                cluster_query = cluster_query.filter(LutCluster.parent_cluster_id.is_(None))
         
         # 获取唯一的文件ID列表
         file_ids = [row[0] for row in cluster_query.all()]
@@ -1638,39 +1886,41 @@ def get_cluster_files(cluster_id):
         # 如果需要按距离排序，使用数据库中存储的距离
         if sort_by_distance:
             # 使用子查询获取文件ID和距离，然后按距离排序
-            from sqlalchemy import case, func
-            cluster_with_distance = db.session.query(
-                LutCluster.lut_file_id,
-                LutCluster.distance_to_center
-            ).filter(
-                LutCluster.cluster_id == actual_cluster_id,
+            from sqlalchemy import case, func, select, and_
+            
+            if cluster_record and cluster_record.path:
+                # 使用path字段查询（更精确）
+                distance_subquery = select(
+                    LutCluster.lut_file_id,
+                    func.min(
+                        case(
+                            (LutCluster.distance_to_center.is_(None), 999999),
+                            else_=LutCluster.distance_to_center
+                        )
+                    ).label('min_distance')
+                ).where(
+                    and_(
+                        LutCluster.path == cluster_path,
                 LutCluster.distilled == False
-            )
-            
-            # 如果是子聚类，需要匹配parent_cluster_id
-            if parent_cluster_id is not None:
-                cluster_with_distance = cluster_with_distance.filter(LutCluster.parent_cluster_id == parent_cluster_id)
-            else:
-                cluster_with_distance = cluster_with_distance.filter(LutCluster.parent_cluster_id.is_(None))
-            
-            # 对于每个文件，如果有多个记录，取距离最小的那个（或第一个非NULL的）
-            # 使用GROUP BY获取每个文件的最小距离
-            from sqlalchemy import select, and_
-            distance_subquery = select(
-                LutCluster.lut_file_id,
-                func.min(
-                    case(
-                        (LutCluster.distance_to_center.is_(None), 999999),
-                        else_=LutCluster.distance_to_center
                     )
-                ).label('min_distance')
-            ).where(
-                and_(
-                    LutCluster.cluster_id == actual_cluster_id,
-                    LutCluster.distilled == False,
-                    LutCluster.parent_cluster_id == parent_cluster_id if parent_cluster_id is not None else LutCluster.parent_cluster_id.is_(None)
-                )
-            ).group_by(LutCluster.lut_file_id).subquery()
+                ).group_by(LutCluster.lut_file_id).subquery()
+            else:
+                # 使用旧的查询方式（向后兼容）
+                distance_subquery = select(
+                    LutCluster.lut_file_id,
+                    func.min(
+                        case(
+                            (LutCluster.distance_to_center.is_(None), 999999),
+                            else_=LutCluster.distance_to_center
+                        )
+                    ).label('min_distance')
+                ).where(
+                    and_(
+                        LutCluster.cluster_id == actual_cluster_id,
+                        LutCluster.distilled == False,
+                        LutCluster.parent_cluster_id == parent_cluster_id if parent_cluster_id is not None else LutCluster.parent_cluster_id.is_(None)
+                    )
+                ).group_by(LutCluster.lut_file_id).subquery()
             
             # 获取排序后的文件ID列表
             ordered_file_ids = db.session.query(distance_subquery.c.lut_file_id).order_by(
@@ -1720,11 +1970,11 @@ def get_cluster_files(cluster_id):
             'data': {
                 'list': result_list,
                 'total': total,
-                    'page': page,
-                    'page_size': page_size,
+                'page': page,
+                'page_size': page_size,
                     'cluster_id': str(cluster_id)
-                }
-            })
+            }
+        })
     except Exception as e:
         error_detail = traceback.format_exc()
         current_app.logger.error(f"获取聚类文件列表失败: {error_detail}")
@@ -1801,40 +2051,27 @@ def recluster_cluster(parent_cluster_id):
         if n_clusters < 2:
             return jsonify({'code': 400, 'message': '聚类数必须大于等于2'}), 400
         
-        # 解析parent_cluster_id
-        if '-' in str(parent_cluster_id):
-            # 子聚类格式：parent_id-cluster_id
-            parts = str(parent_cluster_id).split('-')
-            if len(parts) != 2:
-                return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
-            try:
-                parent_parent_cluster_id = int(parts[0])
-                actual_parent_cluster_id = int(parts[1])
-            except ValueError:
-                return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
-        else:
-            # 顶级聚类
-            try:
-                actual_parent_cluster_id = int(parent_cluster_id)
-                parent_parent_cluster_id = None
-            except ValueError:
-                return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
+        # 使用path字段直接查找父聚类，支持多级子聚类
+        parent_path = str(parent_cluster_id)
+        parent_record = LutCluster.query.filter(
+            LutCluster.path == parent_path,
+            LutCluster.distilled == False
+        ).first()
+        
+        if not parent_record:
+            return jsonify({'code': 404, 'message': f'找不到聚类: {parent_cluster_id}'}), 404
+        
+        # 获取父聚类的cluster_id、parent_cluster_id和level
+        actual_parent_cluster_id = parent_record.cluster_id
+        parent_parent_cluster_id = parent_record.parent_cluster_id
+        parent_level = parent_record.level if parent_record.level is not None else 0
         
         # 获取父聚类的所有LUT文件（未蒸馏的）
-        if parent_parent_cluster_id is None:
-            # 顶级聚类
-            parent_cluster_files = LutFile.query.join(LutCluster).filter(
-                LutCluster.cluster_id == actual_parent_cluster_id,
-                LutCluster.distilled == False,
-                LutCluster.parent_cluster_id.is_(None)
-            ).distinct().all()
-        else:
-            # 子聚类
-            parent_cluster_files = LutFile.query.join(LutCluster).filter(
-                LutCluster.cluster_id == actual_parent_cluster_id,
-                LutCluster.parent_cluster_id == parent_parent_cluster_id,
-                LutCluster.distilled == False
-            ).distinct().all()
+        # 使用path字段查询，更精确
+        parent_cluster_files = LutFile.query.join(LutCluster).filter(
+            LutCluster.path == parent_path,
+            LutCluster.distilled == False
+        ).distinct().all()
         
         if len(parent_cluster_files) < n_clusters:
             return jsonify({
@@ -2083,31 +2320,29 @@ def recluster_cluster(parent_cluster_id):
                 current_app.logger.error(f"再次聚类失败: {error_detail}")
                 return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
         
-        # 先清除该父聚类的所有子聚类记录，避免重复
-        if parent_parent_cluster_id is None:
-            # 顶级聚类：清除所有parent_cluster_id等于该聚类cluster_id的记录
-            LutCluster.query.filter(
-                LutCluster.parent_cluster_id == actual_parent_cluster_id
-            ).delete()
-        else:
-            # 子聚类：需要找到所有属于该子聚类的记录，然后清除它们的子聚类
-            # 先找到该子聚类的所有记录，然后清除以这些记录的cluster_id为parent_cluster_id的记录
-            # 但这样比较复杂，我们可以直接清除所有parent_cluster_id等于actual_parent_cluster_id且parent_parent_cluster_id等于parent_parent_cluster_id的记录
-            # 实际上，我们需要清除的是：cluster_id=actual_parent_cluster_id, parent_cluster_id=parent_parent_cluster_id的所有子聚类
-            # 但数据库中parent_cluster_id只存储了直接的父聚类ID，所以我们需要找到所有可能的子聚类
-            # 简化方案：清除所有parent_cluster_id等于actual_parent_cluster_id的记录
-            LutCluster.query.filter(
-                LutCluster.parent_cluster_id == actual_parent_cluster_id
-            ).delete()
+        # 先清除该父聚类的所有直接子聚类记录，避免重复
+        # 使用path字段查找所有直接子聚类（如"1-1-0", "1-1-1"等，但不包括"1-1-0-0"）
+        # 方法：查找所有path以"parent_path-"开头，且level等于parent_level+1的记录
+        LutCluster.query.filter(
+            LutCluster.path.like(f"{parent_path}-%"),
+            LutCluster.level == parent_level + 1
+        ).delete()
         db.session.commit()
         
         # 保存子聚类结果
-        # parent_cluster_id应该设置为actual_parent_cluster_id（即父聚类的cluster_id）
+        # parent_path和parent_level已经在上面获取了
+        
         cluster_records = []
         for file_id, cluster_id in zip(file_ids, cluster_labels):
+            # 生成子聚类的path和level
+            sub_path = f"{parent_path}-{cluster_id}"
+            sub_level = (parent_level if parent_level is not None else 0) + 1
+            
             cluster_record = LutCluster(
                 cluster_id=int(cluster_id),
                 parent_cluster_id=actual_parent_cluster_id,  # 设置父聚类的cluster_id
+                path=sub_path,  # 设置完整路径
+                level=sub_level,  # 设置层级深度
                 lut_file_id=file_id,
                 distance_to_center=file_distances.get(file_id)
             )
@@ -2117,14 +2352,10 @@ def recluster_cluster(parent_cluster_id):
         db.session.commit()
         
         # 统计每个子聚类的文件数量
+        # 使用path字段作为显示ID，更准确
         cluster_stats = {}
         for record in cluster_records:
-            cluster_id = record.cluster_id
-            # 生成显示ID：如果父聚类是顶级，显示为"parent-cluster"，否则显示为"parent_parent-parent-cluster"
-            if parent_parent_cluster_id is None:
-                display_id = f"{actual_parent_cluster_id}-{cluster_id}"
-            else:
-                display_id = f"{parent_parent_cluster_id}-{actual_parent_cluster_id}-{cluster_id}"
+            display_id = record.path  # 直接使用path作为显示ID
             if display_id not in cluster_stats:
                 cluster_stats[display_id] = 0
             cluster_stats[display_id] += 1
@@ -2156,39 +2387,64 @@ def recluster_cluster(parent_cluster_id):
 @bp.route('/cluster/<cluster_id>/distill/<int:lut_file_id>', methods=['POST'])
 def distill_lut_file(cluster_id, lut_file_id):
     """蒸馏LUT文件（标记为已蒸馏，不再显示在聚类中）
-    支持层级聚类：cluster_id可以是"0"（顶级聚类）或"1-4"（子聚类，格式：父编号-自编号）
+    支持多级层级聚类：cluster_id可以是"0"（顶级聚类）或"12-6-1"（多级子聚类）
     """
     try:
-        # 解析cluster_id，支持层级聚类格式（父编号-自编号）
-        parent_cluster_id = None
-        actual_cluster_id = None
-        
-        if '-' in str(cluster_id):
-            # 子聚类格式：父编号-自编号
-            parts = str(cluster_id).split('-')
-            if len(parts) == 2:
-                parent_cluster_id = int(parts[0])
-                actual_cluster_id = int(parts[1])
-            else:
-                return jsonify({'code': 400, 'message': '无效的聚类ID格式'}), 400
-        else:
-            # 顶级聚类
-            actual_cluster_id = int(cluster_id)
+        # 使用path字段直接查询，避免递归查找
+        cluster_path = str(cluster_id)
         
         # 查找聚类记录
-        query = LutCluster.query.filter_by(
-            cluster_id=actual_cluster_id,
-            lut_file_id=lut_file_id
-        )
+        # 优先使用path字段查询，如果没有path则使用旧的查询方式
+        cluster_record = LutCluster.query.filter(
+            LutCluster.path == cluster_path,
+            LutCluster.lut_file_id == lut_file_id
+        ).first()
         
-        # 如果是子聚类，需要匹配parent_cluster_id
-        if parent_cluster_id is not None:
-            query = query.filter(LutCluster.parent_cluster_id == parent_cluster_id)
-        else:
-            # 顶级聚类，parent_cluster_id应该为NULL
-            query = query.filter(LutCluster.parent_cluster_id.is_(None))
-        
-        cluster_record = query.first()
+        if not cluster_record:
+            # 如果找不到，可能是旧数据没有path字段，使用旧的查询方式
+            # 解析cluster_id，支持多级层级聚类格式（如"12-6-1"）
+            def find_cluster_by_display_id(display_id):
+                """根据显示ID（如"12-6-1"）查找对应的数据库记录，返回(cluster_id, parent_cluster_id)"""
+                if '-' not in str(display_id):
+                    try:
+                        cluster_id = int(display_id)
+                        return (cluster_id, None)
+                    except ValueError:
+                        return None
+                
+                parts = str(display_id).split('-')
+                if len(parts) < 2:
+                    return None
+                
+                try:
+                    final_cluster_id = int(parts[-1])
+                    parent_display_id = '-'.join(parts[:-1])
+                    parent_info = find_cluster_by_display_id(parent_display_id)
+                    if parent_info is None:
+                        return None
+                    parent_cluster_id, _ = parent_info
+                    return (final_cluster_id, parent_cluster_id)
+                except ValueError:
+                    return None
+            
+            cluster_info = find_cluster_by_display_id(cluster_id)
+            if cluster_info is None:
+                return jsonify({'code': 400, 'message': '无效的聚类ID格式或找不到对应的聚类'}), 400
+            
+            actual_cluster_id, parent_cluster_id = cluster_info
+            
+            # 使用旧的查询方式（向后兼容）
+            query = LutCluster.query.filter_by(
+                cluster_id=actual_cluster_id,
+                lut_file_id=lut_file_id
+            )
+            # 如果是子聚类，需要匹配parent_cluster_id
+            if parent_cluster_id is not None:
+                query = query.filter(LutCluster.parent_cluster_id == parent_cluster_id)
+            else:
+                # 顶级聚类，parent_cluster_id应该为NULL
+                query = query.filter(LutCluster.parent_cluster_id.is_(None))
+            cluster_record = query.first()
         
         if not cluster_record:
             return jsonify({'code': 404, 'message': '聚类记录不存在'}), 404
@@ -2223,38 +2479,74 @@ def save_cluster_snapshot():
         if not name:
             return jsonify({'code': 400, 'message': '快照名称不能为空'}), 400
         
-        # 获取当前聚类统计信息（支持层级聚类）
+        # 获取当前聚类统计信息（使用path字段，支持多级层级聚类）
         from sqlalchemy import func
         stats = db.session.query(
             LutCluster.cluster_id,
             LutCluster.parent_cluster_id,
+            LutCluster.path,
+            LutCluster.level,
             func.count(LutCluster.id).label('file_count')
         ).filter(
             LutCluster.distilled == False
-        ).group_by(LutCluster.cluster_id, LutCluster.parent_cluster_id).all()
+        ).group_by(LutCluster.cluster_id, LutCluster.parent_cluster_id, LutCluster.path, LutCluster.level).all()
         
         if not stats:
             return jsonify({'code': 400, 'message': '没有可保存的聚类数据'}), 400
         
         # 获取每个聚类的统计信息（不保存详细文件列表，避免数据过大）
+        # 同时获取聚类名称
         cluster_data = {}
         for stat in stats:
             cluster_id = stat.cluster_id if hasattr(stat, 'cluster_id') else stat[0]
             parent_cluster_id = stat.parent_cluster_id if hasattr(stat, 'parent_cluster_id') else (stat[1] if len(stat) > 1 else None)
-            file_count = stat.file_count if hasattr(stat, 'file_count') else (stat[2] if len(stat) > 2 else stat[1])
+            path = stat.path if hasattr(stat, 'path') else (stat[2] if len(stat) > 2 else None)
+            level = stat.level if hasattr(stat, 'level') else (stat[3] if len(stat) > 3 else None)
+            file_count = stat.file_count if hasattr(stat, 'file_count') else (stat[4] if len(stat) > 4 else stat[1])
             
-            # 生成显示用的聚类编号（父编号-自编号格式）
-            if parent_cluster_id is not None:
-                display_id = f"{parent_cluster_id}-{cluster_id}"
+            # 使用path字段作为显示ID（优先使用path，如果没有则使用旧的格式）
+            if path:
+                display_id = path
             else:
-                display_id = str(cluster_id)
+                # 向后兼容：如果没有path，使用旧的格式
+                if parent_cluster_id is not None:
+                    display_id = f"{parent_cluster_id}-{cluster_id}"
+                else:
+                    display_id = str(cluster_id)
+            
+            # 获取该聚类的名称（从任意一条记录中获取，因为同一聚类的所有记录共享名称）
+            cluster_name = None
+            if path:
+                cluster_record = LutCluster.query.filter(
+                    LutCluster.path == path,
+                    LutCluster.distilled == False
+                ).first()
+            else:
+                if parent_cluster_id is None:
+                    cluster_record = LutCluster.query.filter(
+                        LutCluster.cluster_id == cluster_id,
+                        LutCluster.parent_cluster_id.is_(None),
+                        LutCluster.distilled == False
+                    ).first()
+                else:
+                    cluster_record = LutCluster.query.filter(
+                        LutCluster.cluster_id == cluster_id,
+                        LutCluster.parent_cluster_id == parent_cluster_id,
+                        LutCluster.distilled == False
+                    ).first()
+            
+            if cluster_record:
+                cluster_name = cluster_record.cluster_name
             
             # 只保存统计信息，不保存详细文件列表
             # 详细文件列表可以通过查询实时获取，避免数据过大
             cluster_data[display_id] = {
                 'file_count': file_count,
                 'cluster_id': cluster_id,
-                'parent_cluster_id': parent_cluster_id
+                'parent_cluster_id': parent_cluster_id,
+                'path': path,  # 保存path字段
+                'level': level,  # 保存level字段
+                'cluster_name': cluster_name  # 保存聚类名称
             }
         
         # 创建快照记录

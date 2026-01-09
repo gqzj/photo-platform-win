@@ -9,6 +9,8 @@ class LutCluster(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True, comment='主键ID')
     cluster_id = db.Column(db.Integer, nullable=False, comment='聚类ID（0, 1, 2, ...）')
     parent_cluster_id = db.Column(db.Integer, nullable=True, comment='父聚类ID（NULL表示顶级聚类）')
+    path = db.Column(db.String(500), nullable=True, comment='完整聚类路径（如"12", "12-6", "12-6-2"）')
+    level = db.Column(db.Integer, nullable=True, comment='层级深度（0表示顶级聚类，1表示一级子聚类，以此类推）')
     cluster_name = db.Column(db.String(100), comment='聚类名称（可选）')
     lut_file_id = db.Column(db.Integer, db.ForeignKey('lut_files.id', ondelete='CASCADE'), nullable=False, comment='LUT文件ID')
     distance_to_center = db.Column(db.Float, nullable=True, comment='到聚类中心的距离')
@@ -22,18 +24,26 @@ class LutCluster(db.Model):
         db.Index('idx_cluster_id', 'cluster_id'),
         db.Index('idx_parent_cluster_id', 'parent_cluster_id'),
         db.Index('idx_lut_file_id', 'lut_file_id'),
+        db.Index('idx_path', 'path'),  # path字段索引
+        db.Index('idx_level', 'level'),  # level字段索引
     )
     
     def to_dict(self):
-        # 生成显示用的聚类编号（父编号-自编号格式）
-        display_cluster_id = str(self.cluster_id)
-        if self.parent_cluster_id is not None:
-            display_cluster_id = f"{self.parent_cluster_id}-{self.cluster_id}"
+        # 生成显示用的聚类编号
+        # 优先使用path字段，如果没有则使用parent_cluster_id-cluster_id格式
+        if self.path:
+            display_cluster_id = self.path
+        else:
+            display_cluster_id = str(self.cluster_id)
+            if self.parent_cluster_id is not None:
+                display_cluster_id = f"{self.parent_cluster_id}-{self.cluster_id}"
         
         return {
             'id': self.id,
             'cluster_id': self.cluster_id,
             'parent_cluster_id': self.parent_cluster_id,
+            'path': self.path,  # 新增：完整路径
+            'level': self.level,  # 新增：层级深度
             'display_cluster_id': display_cluster_id,  # 显示用的聚类编号
             'cluster_name': self.cluster_name,
             'lut_file_id': self.lut_file_id,

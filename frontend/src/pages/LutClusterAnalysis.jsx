@@ -18,7 +18,8 @@ import {
   Select,
   Form,
   Input,
-  Popconfirm
+  Popconfirm,
+  Tree
 } from 'antd'
 import { ClusterOutlined, EyeOutlined, ReloadOutlined, DeleteOutlined, SaveOutlined } from '@ant-design/icons'
 import api from '../services/api'
@@ -51,6 +52,9 @@ const LutClusterAnalysis = () => {
   const [reclusterForm] = Form.useForm()
   const [reclusteringClusterId, setReclusteringClusterId] = useState(null)
   const [reclustering, setReclustering] = useState(false)
+  const [editingClusterId, setEditingClusterId] = useState(null)
+  const [editingClusterName, setEditingClusterName] = useState('')
+  const [editNameModalVisible, setEditNameModalVisible] = useState(false)
 
   useEffect(() => {
     fetchClusterStats()
@@ -76,6 +80,56 @@ const LutClusterAnalysis = () => {
     } finally {
       setLoading(false)
     }
+  }
+
+  // 将cluster_stats转换为树形结构
+  const buildClusterTree = (clusterStats) => {
+    if (!clusterStats || !clusterStats.cluster_stats) {
+      return []
+    }
+
+    const tree = []
+    const nodeMap = new Map() // 用于快速查找节点
+
+    // 第一遍：创建所有节点
+    Object.entries(clusterStats.cluster_stats).forEach(([clusterId, clusterInfo]) => {
+      // clusterInfo可能是数字（旧格式）或对象（新格式，包含file_count和cluster_name）
+      const count = typeof clusterInfo === 'object' ? clusterInfo.file_count : clusterInfo
+      const clusterName = typeof clusterInfo === 'object' ? clusterInfo.cluster_name : null
+      
+      const node = {
+        title: clusterName || `聚类 ${clusterId}`,
+        key: clusterId,
+        clusterId: clusterId,
+        count: count,
+        clusterName: clusterName,
+        children: [],
+        isLeaf: true
+      }
+      nodeMap.set(clusterId, node)
+    })
+
+    // 第二遍：构建树形结构
+    nodeMap.forEach((node, clusterId) => {
+      const parts = clusterId.split('-')
+      if (parts.length === 1) {
+        // 顶级节点
+        tree.push(node)
+      } else {
+        // 子节点，找到父节点
+        const parentId = parts.slice(0, -1).join('-')
+        const parentNode = nodeMap.get(parentId)
+        if (parentNode) {
+          parentNode.children.push(node)
+          parentNode.isLeaf = false
+        } else {
+          // 如果找不到父节点，作为顶级节点处理
+          tree.push(node)
+        }
+      }
+    })
+
+    return tree
   }
 
   const handleCluster = async () => {
@@ -233,20 +287,51 @@ const LutClusterAnalysis = () => {
     }
   }
 
+  const handleDoubleClickCluster = (clusterId, clusterName) => {
+    setEditingClusterId(clusterId)
+    setEditingClusterName(clusterName || '')
+    setEditNameModalVisible(true)
+  }
+
+  const handleUpdateClusterName = async () => {
+    if (!editingClusterId) return
+    
+    try {
+      const response = await api.put(`/lut-files/cluster/${editingClusterId}`, {
+        cluster_name: editingClusterName.trim() || null
+      })
+      if (response.code === 200) {
+        message.success('聚类名称更新成功')
+        setEditNameModalVisible(false)
+        setEditingClusterId(null)
+        setEditingClusterName('')
+        // 刷新统计
+        await fetchClusterStats()
+      } else {
+        message.error(response.message || '更新失败')
+      }
+    } catch (error) {
+      message.error('更新失败：' + (error.response?.data?.message || error.message))
+    }
+  }
+
   const handleSaveSnapshot = async () => {
     try {
       const values = await snapshotForm.validateFields()
+      
+      // 从聚类统计中获取指标和算法，而不是从表单控件
+      if (!clusterStats || !clusterStats.metric || !clusterStats.algorithm) {
+        message.error('无法获取聚类统计信息，请先执行聚类分析')
+        return
+      }
+      
       const response = await api.post('/lut-files/cluster/snapshot', {
         name: values.name,
         description: values.description || '',
-        metric: clusterMetric,
-        metric_name: clusterMetric === 'lightweight_7d' ? '轻量7维特征' :
-                     clusterMetric === 'image_features' ? '图像特征映射' :
-                     clusterMetric === 'image_similarity' ? '图片相似度' :
-                     clusterMetric === 'ssim' ? 'SSIM（结构相似性）' :
-                     clusterMetric === 'euclidean' ? '像素欧氏距离' : '未知',
-        algorithm: clusterAlgorithm,
-        algorithm_name: clusterAlgorithm === 'kmeans' ? 'K-Means' : '凝聚式层次聚类'
+        metric: clusterStats.metric,
+        metric_name: clusterStats.metric_name || '未知',
+        algorithm: clusterStats.algorithm,
+        algorithm_name: clusterStats.algorithm_name || '未知'
       })
       if (response.code === 200) {
         message.success('快照保存成功')
@@ -273,172 +358,201 @@ const LutClusterAnalysis = () => {
     <div style={{ padding: '24px' }}>
       <Card>
         <Space direction="vertical" style={{ width: '100%' }} size="large">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '16px' }}>
             <Title level={3} style={{ margin: 0 }}>LUT聚类分析</Title>
-            <Space>
-              <Text>聚类指标：</Text>
-              <Select
-                value={clusterMetric}
-                onChange={(value) => {
-                  setClusterMetric(value)
-                  // 如果选择image_similarity、ssim或euclidean，自动切换到层次聚类
-                  if (value === 'image_similarity' || value === 'ssim' || value === 'euclidean') {
-                    setClusterAlgorithm('hierarchical')
-                  }
-                }}
-                disabled={clustering}
-                style={{ width: 180 }}
-                options={[
-                  { label: '轻量7维特征', value: 'lightweight_7d' },
-                  { label: '图像特征映射', value: 'image_features' },
-                  { label: '图片相似度', value: 'image_similarity' },
-                  { label: 'SSIM（结构相似性）', value: 'ssim' },
-                  { label: '像素欧氏距离', value: 'euclidean' }
-                ]}
-              />
-              <Text>聚类算法：</Text>
-              <Select
-                value={clusterAlgorithm}
-                onChange={setClusterAlgorithm}
-                disabled={clustering || clusterMetric === 'image_similarity' || clusterMetric === 'ssim' || clusterMetric === 'euclidean'}
-                style={{ width: 150 }}
-                options={[
-                  { label: 'K-Means', value: 'kmeans' },
-                  { label: '凝聚式层次聚类', value: 'hierarchical' }
-                ]}
-              />
-              <Text>聚类数：</Text>
-              <InputNumber
-                min={2}
-                max={100}
-                value={nClusters}
-                onChange={(value) => setNClusters(value || 5)}
-                disabled={clustering}
-              />
-              {(clusterMetric === 'image_similarity' || clusterMetric === 'ssim' || clusterMetric === 'euclidean') && (
-                <>
-                  <Text>复用图片：</Text>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', alignItems: 'center' }}>
+              <Space size="middle" wrap>
+                <Space>
+                  <Text strong>聚类指标：</Text>
                   <Select
-                    value={reuseImages}
-                    onChange={setReuseImages}
+                    value={clusterMetric}
+                    onChange={(value) => {
+                      setClusterMetric(value)
+                      // 如果选择image_similarity、ssim或euclidean，自动切换到层次聚类
+                      if (value === 'image_similarity' || value === 'ssim' || value === 'euclidean') {
+                        setClusterAlgorithm('hierarchical')
+                      }
+                    }}
                     disabled={clustering}
-                    style={{ width: 100 }}
+                    style={{ width: 180 }}
                     options={[
-                      { label: '是', value: true },
-                      { label: '否', value: false }
+                      { label: '轻量7维特征', value: 'lightweight_7d' },
+                      { label: '图像特征映射', value: 'image_features' },
+                      { label: '图片相似度', value: 'image_similarity' },
+                      { label: 'SSIM（结构相似性）', value: 'ssim' },
+                      { label: '像素欧氏距离', value: 'euclidean' }
                     ]}
                   />
-                </>
-              )}
+                </Space>
+                <Space>
+                  <Text strong>聚类算法：</Text>
+                  <Select
+                    value={clusterAlgorithm}
+                    onChange={setClusterAlgorithm}
+                    disabled={clustering || clusterMetric === 'image_similarity' || clusterMetric === 'ssim' || clusterMetric === 'euclidean'}
+                    style={{ width: 150 }}
+                    options={[
+                      { label: 'K-Means', value: 'kmeans' },
+                      { label: '凝聚式层次聚类', value: 'hierarchical' }
+                    ]}
+                  />
+                </Space>
+                <Space>
+                  <Text strong>聚类数：</Text>
+                  <InputNumber
+                    min={2}
+                    max={100}
+                    value={nClusters}
+                    onChange={(value) => setNClusters(value || 5)}
+                    disabled={clustering}
+                    style={{ width: 100 }}
+                  />
+                </Space>
+                {(clusterMetric === 'image_similarity' || clusterMetric === 'ssim' || clusterMetric === 'euclidean') && (
+                  <Space>
+                    <Text strong>复用图片：</Text>
+                    <Select
+                      value={reuseImages}
+                      onChange={setReuseImages}
+                      disabled={clustering}
+                      style={{ width: 100 }}
+                      options={[
+                        { label: '是', value: true },
+                        { label: '否', value: false }
+                      ]}
+                    />
+                  </Space>
+                )}
+              </Space>
+            </div>
+          </div>
+          
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', flexWrap: 'wrap' }}>
+            <Button
+              type="primary"
+              icon={<ClusterOutlined />}
+              onClick={handleCluster}
+              loading={clustering}
+              size="large"
+            >
+              执行聚类
+            </Button>
+            <Button
+              icon={<ReloadOutlined />}
+              onClick={fetchClusterStats}
+              loading={loading}
+              size="large"
+            >
+              刷新
+            </Button>
+            {clusterStats && clusterStats.total_clusters > 0 && (
               <Button
-                type="primary"
-                icon={<ClusterOutlined />}
-                onClick={handleCluster}
-                loading={clustering}
+                type="default"
+                icon={<SaveOutlined />}
+                onClick={() => setSaveSnapshotModalVisible(true)}
+                size="large"
               >
-                执行聚类
+                保存快照
               </Button>
-              <Button
-                icon={<ReloadOutlined />}
-                onClick={fetchClusterStats}
-                loading={loading}
-              >
-                刷新
-              </Button>
-              {clusterStats && clusterStats.total_clusters > 0 && (
-                <Button
-                  type="default"
-                  icon={<SaveOutlined />}
-                  onClick={() => setSaveSnapshotModalVisible(true)}
-                >
-                  保存快照
-                </Button>
-              )}
-            </Space>
+            )}
           </div>
 
           <Spin spinning={loading}>
             {clusterStats && clusterStats.total_clusters > 0 ? (
-              <>
-                <Card title="聚类统计" size="small">
-                  <Row gutter={[16, 16]}>
-                    <Col span={24}>
-                      <Space direction="vertical" size="small" style={{ width: '100%' }}>
-                        <div>
-                          <Text strong>总聚类数：</Text>
-                          <Text>{clusterStats.total_clusters}</Text>
-                          <Text strong style={{ marginLeft: 16 }}>总文件数：</Text>
-                          <Text>{clusterStats.total_files}</Text>
-                        </div>
-                        <div>
-                          {clusterStats.metric_name ? (
-                            <>
-                              <Text strong>聚类指标：</Text>
-                              <Tag color="blue">{clusterStats.metric_name}</Tag>
-                            </>
-                          ) : (
-                            <>
-                              <Text strong>聚类指标：</Text>
-                              <Text type="secondary">未知（请保存快照以查看详细信息）</Text>
-                            </>
-                          )}
-                          {clusterStats.algorithm_name ? (
-                            <>
-                              <Text strong style={{ marginLeft: 16 }}>聚类算法：</Text>
-                              <Tag color="green">{clusterStats.algorithm_name}</Tag>
-                            </>
-                          ) : (
-                            <>
-                              <Text strong style={{ marginLeft: 16 }}>聚类算法：</Text>
-                              <Text type="secondary">未知（请保存快照以查看详细信息）</Text>
-                            </>
-                          )}
-                        </div>
-                      </Space>
-                    </Col>
-                    {Object.entries(clusterStats.cluster_stats || {}).map(([clusterId, count]) => {
-                      // 解析clusterId，判断是否为子聚类
-                      const isSubCluster = clusterId.includes('-')
-                      const clusterIdNum = isSubCluster ? parseInt(clusterId.split('-')[0]) : parseInt(clusterId)
-                      const isTopLevel = !isSubCluster
-                      
-                      return (
-                        <Col xs={12} sm={8} md={6} lg={4} key={clusterId}>
-                          <Card
-                            hoverable
+              <Row gutter={16} style={{ height: 'calc(100vh - 250px)' }}>
+                {/* 左侧：聚类统计树 */}
+                <Col span={10} style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+                  <Card 
+                    title="聚类统计" 
+                    size="small"
+                    style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+                    bodyStyle={{ flex: 1, overflow: 'auto', padding: '16px' }}
+                  >
+                    <Space direction="vertical" size="small" style={{ width: '100%', marginBottom: 16 }}>
+                      <div>
+                        <Text strong>总聚类数：</Text>
+                        <Text>{clusterStats.total_clusters}</Text>
+                        <Text strong style={{ marginLeft: 16 }}>总文件数：</Text>
+                        <Text>{clusterStats.total_files}</Text>
+                      </div>
+                      <div>
+                        {clusterStats.metric_name ? (
+                          <>
+                            <Text strong>聚类指标：</Text>
+                            <Tag color="blue">{clusterStats.metric_name}</Tag>
+                          </>
+                        ) : (
+                          <>
+                            <Text strong>聚类指标：</Text>
+                            <Text type="secondary">未知（请保存快照以查看详细信息）</Text>
+                          </>
+                        )}
+                        {clusterStats.algorithm_name ? (
+                          <>
+                            <Text strong style={{ marginLeft: 16 }}>聚类算法：</Text>
+                            <Tag color="green">{clusterStats.algorithm_name}</Tag>
+                          </>
+                        ) : (
+                          <>
+                            <Text strong style={{ marginLeft: 16 }}>聚类算法：</Text>
+                            <Text type="secondary">未知（请保存快照以查看详细信息）</Text>
+                          </>
+                        )}
+                      </div>
+                    </Space>
+                    <Tree
+                      showLine
+                      defaultExpandAll
+                      treeData={buildClusterTree(clusterStats)}
+                      titleRender={(nodeData) => {
+                        const clusterId = nodeData.clusterId
+                        const count = nodeData.count
+                        const clusterName = nodeData.clusterName
+                        const clusterIdNum = String(clusterId).includes('-') ? parseInt(String(clusterId).split('-')[0]) : parseInt(clusterId)
+                        const isSelected = selectedClusterId === clusterId || selectedClusterId === clusterId.toString()
+                        
+                        return (
+                          <div
                             style={{
-                              textAlign: 'center',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '4px 8px',
+                              backgroundColor: isSelected ? '#e6f7ff' : 'transparent',
+                              borderRadius: '4px',
                               cursor: 'pointer',
-                              borderColor: selectedClusterId === clusterId || selectedClusterId === clusterId.toString() ? '#1890ff' : undefined
+                              width: '100%'
                             }}
                             onClick={() => setSelectedClusterId(clusterId)}
-                            actions={[
+                            onDoubleClick={(e) => {
+                              e.stopPropagation()
+                              handleDoubleClickCluster(clusterId, clusterName)
+                            }}
+                            title="双击编辑名称"
+                          >
+                            <Space>
+                              <Tag color={getClusterColor(clusterIdNum)}>
+                                {clusterName || `聚类 ${clusterId}`}
+                              </Tag>
+                              <Text type="secondary">({count} 个文件)</Text>
+                            </Space>
+                            <Space size="small" onClick={(e) => e.stopPropagation()}>
                               <Button
-                                key="recluster"
                                 type="link"
                                 size="small"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  // 支持子聚类再次聚类，直接使用clusterId字符串
+                                onClick={() => {
                                   setReclusteringClusterId(clusterId)
                                   reclusterForm.setFieldsValue({ n_clusters: 3, reuse_images: true })
                                   setReclusterModalVisible(true)
                                 }}
                                 disabled={reclustering}
                               >
-                                再次聚类
-                              </Button>,
+                                聚类
+                              </Button>
                               <Popconfirm
-                                key="delete"
                                 title={`确定要删除聚类 ${clusterId} 吗？`}
                                 description="删除后该聚类中的文件将不再显示"
-                                onConfirm={(e) => {
-                                  e?.stopPropagation()
-                                  handleDeleteCluster(clusterId)
-                                }}
-                                onCancel={(e) => {
-                                  e?.stopPropagation()
-                                }}
+                                onConfirm={() => handleDeleteCluster(clusterId)}
                                 okText="确定"
                                 cancelText="取消"
                               >
@@ -446,36 +560,33 @@ const LutClusterAnalysis = () => {
                                   type="link"
                                   danger
                                   size="small"
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                  }}
+                                  icon={<DeleteOutlined />}
                                 >
                                   删除
                                 </Button>
                               </Popconfirm>
-                            ]}
-                          >
-                            <Tag color={getClusterColor(clusterIdNum)} style={{ fontSize: 16, padding: '4px 12px' }}>
-                              聚类 {clusterId}
-                            </Tag>
-                            <div style={{ marginTop: 8, fontSize: 18, fontWeight: 'bold' }}>
-                              {count} 个文件
-                            </div>
-                          </Card>
-                        </Col>
-                      )
-                    })}
-                  </Row>
-                </Card>
+                            </Space>
+                          </div>
+                        )
+                      }}
+                    />
+                  </Card>
+                </Col>
 
-                {selectedClusterId !== null && (
-                  <Card title={`聚类 ${selectedClusterId} 的文件列表`}>
-                    <Spin spinning={filesLoading}>
-                      {clusterFiles.length > 0 ? (
-                        <>
-                          <Row gutter={[16, 16]}>
-                            {clusterFiles.map((file) => (
-                              <Col xs={12} sm={8} md={6} lg={4} xl={4} key={file.id}>
+                {/* 右侧：文件列表 */}
+                <Col span={14} style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+                  {selectedClusterId !== null ? (
+                    <Card 
+                      title={`聚类 ${selectedClusterId} 的文件列表`}
+                      style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+                      bodyStyle={{ flex: 1, overflow: 'auto', padding: '16px' }}
+                    >
+                      <Spin spinning={filesLoading}>
+                        {clusterFiles.length > 0 ? (
+                          <>
+                            <Row gutter={[16, 16]}>
+                              {clusterFiles.map((file) => (
+                              <Col xs={12} sm={8} md={6} lg={6} xl={6} key={file.id}>
                                 <Card
                                   hoverable
                                   style={{
@@ -484,22 +595,26 @@ const LutClusterAnalysis = () => {
                                     flexDirection: 'column'
                                   }}
                                   bodyStyle={{
-                                    padding: '12px',
+                                    padding: '8px',
                                     display: 'flex',
                                     flexDirection: 'column',
                                     flex: 1
                                   }}
                                   cover={
                                     file.thumbnail_path ? (
-                                      <div style={{ 
-                                        width: '100%', 
-                                        height: '250px', 
-                                        display: 'flex', 
-                                        alignItems: 'center', 
-                                        justifyContent: 'center',
-                                        backgroundColor: '#f5f5f5',
-                                        overflow: 'hidden'
-                                      }}>
+                                      <div 
+                                        style={{ 
+                                          width: '100%', 
+                                          height: '180px', 
+                                          display: 'flex', 
+                                          alignItems: 'center', 
+                                          justifyContent: 'center',
+                                          backgroundColor: '#f5f5f5',
+                                          overflow: 'hidden',
+                                          cursor: 'pointer'
+                                        }}
+                                        onClick={() => handlePreview(file)}
+                                      >
                                         <Image
                                           src={`/api/lut-files/${file.id}/thumbnail`}
                                           alt={file.original_filename}
@@ -514,7 +629,7 @@ const LutClusterAnalysis = () => {
                                     ) : (
                                       <div style={{ 
                                         width: '100%', 
-                                        height: '250px', 
+                                        height: '180px', 
                                         display: 'flex', 
                                         alignItems: 'center', 
                                         justifyContent: 'center',
@@ -532,55 +647,25 @@ const LutClusterAnalysis = () => {
                                       ellipsis
                                       style={{
                                         display: 'block',
-                                        marginBottom: '8px',
-                                        fontSize: '13px'
+                                        marginBottom: '4px',
+                                        fontSize: '12px'
                                       }}
                                       title={file.original_filename}
                                     >
                                       {file.original_filename}
                                     </Typography.Text>
-                                    <div style={{ marginBottom: '8px' }}>
-                                      <Text type="secondary" style={{ fontSize: '11px' }}>
+                                    <div style={{ marginBottom: '4px' }}>
+                                      <Text type="secondary" style={{ fontSize: '10px' }}>
                                         ID: {file.id}
                                       </Text>
                                     </div>
-                                    <div style={{ marginBottom: '8px' }}>
-                                      <Text type="secondary" style={{ fontSize: '12px' }}>
+                                    <div style={{ marginBottom: '4px' }}>
+                                      <Text type="secondary" style={{ fontSize: '11px' }}>
                                         {file.category_name || '未分类'}
                                       </Text>
                                     </div>
-                                    {file.tag && (
-                                      <div style={{ marginBottom: '8px' }}>
-                                        <Space size={[4, 4]} wrap>
-                                          {file.tag.tone && (
-                                            <Tag color="orange" style={{ fontSize: '11px', margin: 0 }}>
-                                              {file.tag.tone}
-                                            </Tag>
-                                          )}
-                                          {file.tag.saturation && (
-                                            <Tag color="blue" style={{ fontSize: '11px', margin: 0 }}>
-                                              {file.tag.saturation}
-                                            </Tag>
-                                          )}
-                                          {file.tag.contrast && (
-                                            <Tag color="purple" style={{ fontSize: '11px', margin: 0 }}>
-                                              {file.tag.contrast}
-                                            </Tag>
-                                          )}
-                                        </Space>
-                                      </div>
-                                    )}
                                   </div>
                                   <Space style={{ marginTop: '8px', width: '100%' }} direction="vertical" size="small">
-                                    <Button
-                                      type="primary"
-                                      size="small"
-                                      icon={<EyeOutlined />}
-                                      onClick={() => handlePreview(file)}
-                                      block
-                                    >
-                                      预览
-                                    </Button>
                                     <Popconfirm
                                       title="确定要蒸馏这个LUT文件吗？"
                                       description="蒸馏后该文件将不再显示在当前聚类中"
@@ -602,26 +687,31 @@ const LutClusterAnalysis = () => {
                               </Col>
                             ))}
                           </Row>
-                          {filesPagination.total > filesPagination.pageSize && (
-                            <div style={{ marginTop: '24px', textAlign: 'center' }}>
-                              <Pagination
-                                current={filesPagination.current}
-                                pageSize={filesPagination.pageSize}
-                                total={filesPagination.total}
-                                onChange={handlePageChange}
-                                showTotal={(total) => `共 ${total} 条`}
-                                showSizeChanger={false}
-                              />
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        <Empty description="该聚类暂无文件" />
-                      )}
-                    </Spin>
-                  </Card>
-                )}
-              </>
+                            {filesPagination.total > filesPagination.pageSize && (
+                              <div style={{ marginTop: '24px', textAlign: 'center' }}>
+                                <Pagination
+                                  current={filesPagination.current}
+                                  pageSize={filesPagination.pageSize}
+                                  total={filesPagination.total}
+                                  onChange={handlePageChange}
+                                  showTotal={(total) => `共 ${total} 条`}
+                                  showSizeChanger={false}
+                                />
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <Empty description="该聚类暂无文件" />
+                        )}
+                      </Spin>
+                    </Card>
+                  ) : (
+                    <Card style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <Empty description="请从左侧选择一个聚类查看文件列表" />
+                    </Card>
+                  )}
+                </Col>
+              </Row>
             ) : (
               <Empty description="暂无聚类结果，请先执行聚类分析" />
             )}
@@ -765,6 +855,34 @@ const LutClusterAnalysis = () => {
           </Form.Item>
           <Text type="secondary" style={{ fontSize: 12 }}>
             再次聚类将使用与父聚类相同的指标和算法，子聚类编号格式为：父编号-自编号（如：{typeof reclusteringClusterId === 'string' ? reclusteringClusterId : reclusteringClusterId}-0, {typeof reclusteringClusterId === 'string' ? reclusteringClusterId : reclusteringClusterId}-1）
+          </Text>
+        </Form>
+      </Modal>
+
+      {/* 编辑聚类名称模态框 */}
+      <Modal
+        title={`编辑聚类 ${editingClusterId} 的名称`}
+        open={editNameModalVisible}
+        onOk={handleUpdateClusterName}
+        onCancel={() => {
+          setEditNameModalVisible(false)
+          setEditingClusterId(null)
+          setEditingClusterName('')
+        }}
+        okText="保存"
+        cancelText="取消"
+      >
+        <Form layout="vertical">
+          <Form.Item label="聚类名称">
+            <Input
+              value={editingClusterName}
+              onChange={(e) => setEditingClusterName(e.target.value)}
+              placeholder="请输入聚类名称（留空则使用默认名称）"
+              maxLength={100}
+            />
+          </Form.Item>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            留空则使用默认名称（聚类 {editingClusterId}）
           </Text>
         </Form>
       </Modal>
