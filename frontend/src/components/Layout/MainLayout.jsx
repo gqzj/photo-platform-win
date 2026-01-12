@@ -132,6 +132,16 @@ const MainLayout = ({ children }) => {
           label: '关键字查看'
         },
         {
+          key: '/semantic-search',
+          icon: <SearchOutlined />,
+          label: '语义搜索'
+        },
+        {
+          key: '/semantic-search/settings',
+          icon: <SettingOutlined />,
+          label: '语义搜索设置'
+        },
+        {
           key: '/library/recycle',
           icon: <DeleteOutlined />,
           label: '图片回收站'
@@ -274,6 +284,7 @@ const MainLayout = ({ children }) => {
     if (path.startsWith('/lut-analysis')) return 'lut-analysis'
     if (path.startsWith('/tools')) return 'tools'
     if (path.startsWith('/settings')) return 'settings'
+    if (path.startsWith('/semantic-search')) return 'library' // 语义搜索属于图片库
     return 'library' // 默认
   }
 

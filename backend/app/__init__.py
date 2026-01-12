@@ -57,7 +57,7 @@ def create_app():
     CORS(app, resources={r"/api/*": {"origins": "*"}})
     
     # 注册蓝图
-    from app.api import image_capture, image_tagging, image_statistics, crawler_cookie, crawler_task, post, settings, feature, data_cleaning_task, image_recycle, tagging_task, image_cleaning_test, image_tagging_test, sample_set, keyword_statistics, feature_analysis, requirement, feature_group, style, style_match, lut_category, lut_file, sample_image, tools
+    from app.api import image_capture, image_tagging, image_statistics, crawler_cookie, crawler_task, post, settings, feature, data_cleaning_task, image_recycle, tagging_task, image_cleaning_test, image_tagging_test, sample_set, keyword_statistics, feature_analysis, requirement, feature_group, style, style_match, lut_category, lut_file, sample_image, tools, semantic_search
     
     app.register_blueprint(image_capture.bp, url_prefix='/api/images/capture')
     app.register_blueprint(image_tagging.bp, url_prefix='/api/images')
@@ -83,6 +83,7 @@ def create_app():
     app.register_blueprint(lut_file.bp, url_prefix='/api/lut-files')
     app.register_blueprint(sample_image.bp, url_prefix='/api/sample-images')
     app.register_blueprint(tools.bp, url_prefix='/api/tools')
+    app.register_blueprint(semantic_search.bp, url_prefix='/api/semantic-search')
     
     return app
 

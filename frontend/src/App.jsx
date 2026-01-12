@@ -31,6 +31,8 @@ import LutClusterAnalysis from './pages/LutClusterAnalysis'
 import LutClusterSnapshots from './pages/LutClusterSnapshots'
 import ImageSimilarityTest from './pages/ImageSimilarityTest'
 import ImageFeatureAnalysis from './pages/ImageFeatureAnalysis'
+import SemanticSearch from './pages/SemanticSearch'
+import SemanticSearchSettings from './pages/SemanticSearchSettings'
 
 function App() {
   return (
@@ -68,6 +70,8 @@ function App() {
           <Route path="/lut-analysis/sample-images/:imageId/lut-results" element={<SampleImageLutResults />} />
           <Route path="/lut-analysis/cluster" element={<LutClusterAnalysis />} />
           <Route path="/lut-analysis/snapshots" element={<LutClusterSnapshots />} />
+          <Route path="/semantic-search" element={<SemanticSearch />} />
+          <Route path="/semantic-search/settings" element={<SemanticSearchSettings />} />
           <Route path="/settings/directory" element={<SettingsDirectory />} />
         </Routes>
       </MainLayout>
