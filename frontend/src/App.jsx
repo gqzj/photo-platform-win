@@ -30,6 +30,7 @@ import LutAnalysisTest from './pages/LutAnalysisTest'
 import LutClusterAnalysis from './pages/LutClusterAnalysis'
 import LutClusterSnapshots from './pages/LutClusterSnapshots'
 import ImageSimilarityTest from './pages/ImageSimilarityTest'
+import ImageFeatureAnalysis from './pages/ImageFeatureAnalysis'
 
 function App() {
   return (
@@ -38,6 +39,7 @@ function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/library/images" replace />} />
           <Route path="/library/images" element={<ImageLibrary />} />
+          <Route path="/library/feature-analysis" element={<ImageFeatureAnalysis />} />
           <Route path="/library/posts" element={<PostList />} />
           <Route path="/library/keywords" element={<KeywordView />} />
           <Route path="/library/recycle" element={<ImageRecycle />} />

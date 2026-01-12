@@ -117,6 +117,11 @@ const MainLayout = ({ children }) => {
           label: '抓取图片库'
         },
         {
+          key: '/library/feature-analysis',
+          icon: <BarChartOutlined />,
+          label: '图片库特征分析'
+        },
+        {
           key: '/library/posts',
           icon: <FileTextOutlined />,
           label: '小红书帖子'

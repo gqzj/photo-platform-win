@@ -184,6 +184,25 @@ const FeatureManagement = () => {
     }
   }
 
+  // 启用/禁用特征
+  const handleToggleStatus = async (record) => {
+    try {
+      const newStatus = record.status === 'active' ? 'inactive' : 'active'
+      const response = await api.put(`/features/${record.id}`, {
+        status: newStatus
+      })
+      if (response.code === 200) {
+        message.success(newStatus === 'active' ? '启用成功' : '禁用成功')
+        fetchData(pagination.current, pagination.pageSize)
+      } else {
+        message.error(response.message || '操作失败')
+      }
+    } catch (error) {
+      message.error('操作失败：' + (error.response?.data?.message || error.message))
+      console.error('启用/禁用特征错误:', error)
+    }
+  }
+
   // 批量删除
   const handleBatchDelete = async () => {
     if (selectedRowKeys.length === 0) {
@@ -305,10 +324,17 @@ const FeatureManagement = () => {
     {
       title: '操作',
       key: 'action',
-      width: 150,
+      width: 200,
       fixed: 'right',
       render: (_, record) => (
         <Space>
+          <Button
+            type="link"
+            size="small"
+            onClick={() => handleToggleStatus(record)}
+          >
+            {record.status === 'active' ? '禁用' : '启用'}
+          </Button>
           <Button
             type="link"
             size="small"

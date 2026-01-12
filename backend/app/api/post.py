@@ -4,6 +4,7 @@ from app.models.post import Post
 from app.models.post_media import PostMedia
 from app.models.post_comment import PostComment
 from app.utils.config_manager import get_local_image_dir
+from sqlalchemy import case, cast, Integer
 import traceback
 import os
 
@@ -18,6 +19,8 @@ def get_post_list():
         keyword = request.args.get('keyword', type=str)
         author_name = request.args.get('author_name', type=str)
         search_keyword = request.args.get('search_keyword', type=str)
+        sort_by = request.args.get('sort_by', 'crawl_time', type=str)  # 排序字段：crawl_time, like_count
+        sort_order = request.args.get('sort_order', 'desc', type=str)  # 排序方向：asc, desc
         
         query = Post.query
         
@@ -35,8 +38,73 @@ def get_post_list():
         if search_keyword:
             query = query.filter(Post.search_keyword.like(f'%{search_keyword}%'))
         
+        # 排序处理
+        if sort_by == 'like_count':
+            # 将字符串类型的like_count转换为数字进行排序
+            # 处理like_count可能包含"w"（万）、"k"（千）等字符的情况
+            # 使用CASE表达式处理不同的格式
+            # 提取数字部分并转换单位
+            # 如果包含"w"，乘以10000；如果包含"k"，乘以1000；否则直接转换
+            # 先移除所有非数字字符（除了小数点），然后根据单位转换
+            # MySQL不支持NULLS LAST，使用ISNULL()函数将NULL值放在最后
+            like_count_numeric = case(
+                (Post.like_count.like('%w%'), 
+                 cast(
+                     db.func.replace(
+                         db.func.replace(
+                             db.func.replace(Post.like_count, 'w', ''), 
+                             'k', ''
+                         ), 
+                         '.', ''
+                     ), 
+                     Integer
+                 ) * 10000),
+                (Post.like_count.like('%k%'), 
+                 cast(
+                     db.func.replace(
+                         db.func.replace(Post.like_count, 'k', ''), 
+                         '.', ''
+                     ), 
+                     Integer
+                 ) * 1000),
+                else_=cast(
+                    db.func.replace(
+                        db.func.replace(
+                            db.func.replace(
+                                db.func.replace(Post.like_count, '.', ''), 
+                                'w', ''
+                            ), 
+                            'k', ''
+                        ), 
+                        ' ', ''
+                    ), 
+                    Integer
+                )
+            )
+            # MySQL兼容的NULL处理：使用ISNULL()将NULL值放在最后
+            if sort_order == 'asc':
+                # 升序：NULL值放在最后，所以先按ISNULL排序，再按值排序
+                query = query.order_by(
+                    db.func.isnull(like_count_numeric).asc(),
+                    like_count_numeric.asc()
+                )
+            else:
+                # 降序：NULL值放在最后，所以先按ISNULL排序，再按值排序
+                query = query.order_by(
+                    db.func.isnull(like_count_numeric).asc(),
+                    like_count_numeric.desc()
+                )
+        elif sort_by == 'crawl_time':
+            if sort_order == 'asc':
+                query = query.order_by(Post.crawl_time.asc())
+            else:
+                query = query.order_by(Post.crawl_time.desc())
+        else:
+            # 默认按抓取时间降序
+            query = query.order_by(Post.crawl_time.desc())
+        
         total = query.count()
-        posts = query.order_by(Post.crawl_time.desc()).offset((page - 1) * page_size).limit(page_size).all()
+        posts = query.offset((page - 1) * page_size).limit(page_size).all()
         
         # 获取每个帖子的媒体（图片）
         post_list = []

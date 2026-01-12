@@ -21,13 +21,15 @@ const PostList = () => {
     author_name: '',
     search_keyword: ''
   })
+  const [sortBy, setSortBy] = useState('crawl_time')
+  const [sortOrder, setSortOrder] = useState('desc')
   const [detailModalVisible, setDetailModalVisible] = useState(false)
   const [selectedPostId, setSelectedPostId] = useState(null)
   // 移除imageUrlCache，直接使用API接口URL
 
   useEffect(() => {
     fetchData()
-  }, [pagination.current, pagination.pageSize, filters])
+  }, [pagination.current, pagination.pageSize, filters, sortBy, sortOrder])
 
   const fetchData = async () => {
     setLoading(true)
@@ -37,7 +39,9 @@ const PostList = () => {
         page_size: pagination.pageSize,
         keyword: filters.keyword || undefined,
         author_name: filters.author_name || undefined,
-        search_keyword: filters.search_keyword || undefined
+        search_keyword: filters.search_keyword || undefined,
+        sort_by: sortBy,
+        sort_order: sortOrder
       }
       
       const response = await api.get('/posts', { params })
@@ -66,6 +70,16 @@ const PostList = () => {
 
   const handleFilterChange = (key, value) => {
     setFilters(prev => ({ ...prev, [key]: value }))
+    setPagination(prev => ({ ...prev, current: 1 }))
+  }
+
+  const handleSortChange = (value) => {
+    setSortBy(value)
+    setPagination(prev => ({ ...prev, current: 1 }))
+  }
+
+  const handleSortOrderChange = (value) => {
+    setSortOrder(value)
     setPagination(prev => ({ ...prev, current: 1 }))
   }
 
@@ -106,7 +120,7 @@ const PostList = () => {
       <Card
         title="小红书帖子"
         extra={
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <Search
               placeholder="搜索帖子标题或内容"
               allowClear
@@ -126,6 +140,22 @@ const PostList = () => {
               style={{ width: 150 }}
               onChange={(e) => handleFilterChange('search_keyword', e.target.value)}
             />
+            <Select
+              value={sortBy}
+              onChange={handleSortChange}
+              style={{ width: 120 }}
+            >
+              <Option value="crawl_time">抓取时间</Option>
+              <Option value="like_count">点赞数</Option>
+            </Select>
+            <Select
+              value={sortOrder}
+              onChange={handleSortOrderChange}
+              style={{ width: 100 }}
+            >
+              <Option value="desc">降序</Option>
+              <Option value="asc">升序</Option>
+            </Select>
           </div>
         }
       >
