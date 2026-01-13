@@ -9,6 +9,8 @@ from app.models.lut_cluster import LutCluster
 from app.models.lut_cluster_snapshot import LutClusterSnapshot
 from app.utils.config_manager import get_local_image_dir
 from app.services.lut_analysis_service import LutAnalysisService
+from app.services.lut_application_service import LutApplicationService
+from app.services.lut_quality_assessment_service import LutQualityAssessmentService
 from werkzeug.utils import secure_filename
 import traceback
 import os
@@ -46,7 +48,7 @@ def get_lut_thumbnail_dir():
 
 def generate_lut_thumbnail(lut_file_id, lut_file_path):
     """
-    生成LUT文件的缩略图（应用LUT到lut_standard.png）
+    生成LUT文件的缩略图（应用LUT到lut_standard.jpg）
     
     Args:
         lut_file_id: LUT文件ID
@@ -56,17 +58,29 @@ def generate_lut_thumbnail(lut_file_id, lut_file_path):
         缩略图路径（相对于存储目录）或None
     """
     try:
-        # 查找lut_standard.png文件（在backend目录下）
+        # 查找标准图文件（在backend目录下），优先使用lut_standard.jpg
         current_file = os.path.abspath(__file__)
         backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
-        standard_image_path = os.path.join(backend_dir, 'lut_standard.png')
         
-        if not os.path.exists(standard_image_path):
-            # 如果lut_standard.png不存在，尝试standard.png
-            standard_image_path = os.path.join(backend_dir, 'standard.png')
-            if not os.path.exists(standard_image_path):
-                current_app.logger.warning(f"标准图文件不存在: lut_standard.png 或 standard.png")
-                return None
+        # 按优先级查找标准图文件
+        standard_image_candidates = [
+            'lut_standard.jpg',
+            'lut_standard.png',
+            'standard.jpg',
+            'standard.png'
+        ]
+        
+        standard_image_path = None
+        for candidate in standard_image_candidates:
+            candidate_path = os.path.join(backend_dir, candidate)
+            if os.path.exists(candidate_path):
+                standard_image_path = candidate_path
+                current_app.logger.info(f"使用标准图文件: {candidate}")
+                break
+        
+        if not standard_image_path:
+            current_app.logger.warning(f"标准图文件不存在: {', '.join(standard_image_candidates)}")
+            return None
         
         # 应用LUT到标准图
         from app.services.lut_application_service import LutApplicationService
@@ -2038,6 +2052,54 @@ def generate_thumbnail(file_id):
         current_app.logger.error(f"生成LUT文件缩略图失败: {error_detail}")
         return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
 
+@bp.route('/<int:file_id>/quality-assessment', methods=['POST'])
+def assess_lut_quality(file_id):
+    """评估LUT文件质量"""
+    try:
+        lut_file = LutFile.query.get_or_404(file_id)
+        
+        # 检查文件扩展名，目前只支持.cube格式
+        if not lut_file.original_filename.lower().endswith('.cube'):
+            return jsonify({'code': 400, 'message': '目前只支持.cube格式的LUT文件进行质量评估'}), 400
+        
+        # 获取文件路径
+        storage_dir = get_lut_storage_dir()
+        file_path = os.path.join(storage_dir, lut_file.storage_path.replace('/', os.sep))
+        file_path = os.path.normpath(file_path)
+        
+        if not os.path.exists(file_path):
+            return jsonify({'code': 404, 'message': 'LUT文件不存在'}), 404
+        
+        current_app.logger.info(f"开始评估LUT文件质量: {file_path}")
+        
+        # 执行质量评估
+        assessment_service = LutQualityAssessmentService()
+        result = assessment_service.assess_quality(file_path)
+        
+        if not result.get('success', False):
+            return jsonify({
+                'code': 500,
+                'message': f'质量评估失败: {result.get("error", "未知错误")}'
+            }), 500
+        
+        return jsonify({
+            'code': 200,
+            'message': '质量评估完成',
+            'data': {
+                'lut_file_id': lut_file.id,
+                'lut_file_name': lut_file.original_filename,
+                'lut_size': result.get('lut_size'),
+                'color_errors': result.get('color_errors', {}),
+                'smoothness': result.get('smoothness', {}),
+                'conclusion': result.get('conclusion', {})
+            }
+        })
+        
+    except Exception as e:
+        error_detail = traceback.format_exc()
+        current_app.logger.error(f"评估LUT文件质量失败: {error_detail}")
+        return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
+
 @bp.route('/cluster/<parent_cluster_id>/recluster', methods=['POST'])
 def recluster_cluster(parent_cluster_id):
     """对指定聚类进行再次聚类（子聚类）
@@ -2638,4 +2700,106 @@ def delete_cluster_snapshot(snapshot_id):
         db.session.rollback()
         error_detail = traceback.format_exc()
         current_app.logger.error(f"删除聚类快照失败: {error_detail}")
+        return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
+
+@bp.route('/<int:file_id>/apply', methods=['POST'])
+def apply_lut_to_image(file_id):
+    """应用LUT到上传的图片"""
+    try:
+        lut_file = LutFile.query.get_or_404(file_id)
+        
+        # 检查是否有上传的图片
+        if 'image' not in request.files:
+            return jsonify({'code': 400, 'message': '请上传图片文件'}), 400
+        
+        file = request.files['image']
+        if file.filename == '':
+            return jsonify({'code': 400, 'message': '请上传有效的图片文件'}), 400
+        
+        # 检查文件类型
+        allowed_image_extensions = {'jpg', 'jpeg', 'png', 'bmp', 'gif', 'webp'}
+        file_ext = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
+        if file_ext not in allowed_image_extensions:
+            return jsonify({'code': 400, 'message': f'不支持的图片格式，仅支持: {", ".join(allowed_image_extensions)}'}), 400
+        
+        # 保存上传的图片到临时目录
+        import tempfile
+        temp_dir = tempfile.gettempdir()
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        temp_input_path = os.path.join(temp_dir, f"lut_apply_input_{timestamp}_{file.filename}")
+        file.save(temp_input_path)
+        
+        # 检查文件是否成功保存
+        if not os.path.exists(temp_input_path):
+            return jsonify({'code': 500, 'message': '保存上传的图片失败'}), 500
+        
+        temp_output_path = None
+        
+        try:
+            # 获取LUT文件路径
+            lut_storage_dir = get_lut_storage_dir()
+            lut_file_path = os.path.join(lut_storage_dir, lut_file.storage_path.replace('/', os.sep))
+            
+            # 规范化路径
+            lut_file_path = os.path.normpath(lut_file_path)
+            
+            current_app.logger.info(f"LUT文件路径: {lut_file_path}")
+            current_app.logger.info(f"LUT存储目录: {lut_storage_dir}")
+            current_app.logger.info(f"LUT文件storage_path: {lut_file.storage_path}")
+            
+            if not os.path.exists(lut_file_path):
+                current_app.logger.error(f"LUT文件不存在: {lut_file_path}")
+                return jsonify({'code': 404, 'message': f'LUT文件不存在: {lut_file_path}'}), 404
+            
+            # 创建输出文件路径
+            temp_output_path = os.path.join(temp_dir, f"lut_apply_output_{timestamp}_{file.filename}")
+            
+            # 应用LUT
+            lut_service = LutApplicationService()
+            success, error_msg = lut_service.apply_lut_to_image(
+                temp_input_path,
+                lut_file_path,
+                temp_output_path
+            )
+            
+            if not success:
+                return jsonify({'code': 500, 'message': f'应用LUT失败: {error_msg}'}), 500
+            
+            # 读取结果图片并转换为base64
+            import base64
+            with open(temp_output_path, 'rb') as f:
+                image_data = f.read()
+                image_base64 = base64.b64encode(image_data).decode('utf-8')
+                image_data_url = f"data:image/{file_ext};base64,{image_base64}"
+            
+            # 读取原图并转换为base64
+            with open(temp_input_path, 'rb') as f:
+                original_image_data = f.read()
+                original_image_base64 = base64.b64encode(original_image_data).decode('utf-8')
+                original_image_data_url = f"data:image/{file_ext};base64,{original_image_base64}"
+            
+            return jsonify({
+                'code': 200,
+                'message': 'LUT应用成功',
+                'data': {
+                    'original_image': original_image_data_url,
+                    'result_image': image_data_url,
+                    'lut_file_id': lut_file.id,
+                    'lut_file_name': lut_file.original_filename
+                }
+            })
+                
+        finally:
+            # 清理临时文件
+            try:
+                if os.path.exists(temp_input_path):
+                    os.remove(temp_input_path)
+                if temp_output_path and os.path.exists(temp_output_path):
+                    os.remove(temp_output_path)
+            except:
+                pass
+                
+    except Exception as e:
+        error_detail = traceback.format_exc()
+        current_app.logger.error(f"应用LUT失败: {error_detail}")
         return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500

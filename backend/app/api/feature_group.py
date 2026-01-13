@@ -161,8 +161,8 @@ def update_feature_group(group_id):
         
         # 更新特征关联
         if 'feature_ids' in data:
-            # 清空现有关联
-            FeatureGroupFeature.query.filter_by(feature_group_id=group_id).delete()
+            # 使用关系对象的clear()方法清空关联（更安全，SQLAlchemy会自动处理）
+            feature_group.features.clear()
             # 添加新关联
             feature_ids = data.get('feature_ids', [])
             for feature_id in feature_ids:
@@ -188,6 +188,13 @@ def delete_feature_group(group_id):
     """删除特征组"""
     try:
         feature_group = FeatureGroup.query.get_or_404(group_id)
+        
+        # 先清空关联关系（使用关系方法，更安全）
+        feature_group.features.clear()
+        # 刷新session以确保清空操作被记录
+        db.session.flush()
+        
+        # 删除特征组
         db.session.delete(feature_group)
         db.session.commit()
         
@@ -211,7 +218,19 @@ def batch_delete_feature_groups():
         if not group_ids:
             return jsonify({'code': 400, 'message': '请选择要删除的特征组'}), 400
         
-        deleted_count = FeatureGroup.query.filter(FeatureGroup.id.in_(group_ids)).delete(synchronize_session=False)
+        # 先查询存在的特征组，然后逐个删除（避免期望更新行数的问题）
+        feature_groups = FeatureGroup.query.filter(FeatureGroup.id.in_(group_ids)).all()
+        deleted_count = 0
+        for feature_group in feature_groups:
+            # 先清空关联关系（使用关系方法，更安全）
+            feature_group.features.clear()
+            # 删除特征组
+            db.session.delete(feature_group)
+            deleted_count += 1
+        
+        # 刷新session以确保所有操作被记录
+        db.session.flush()
+        
         db.session.commit()
         
         return jsonify({

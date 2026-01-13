@@ -6,9 +6,17 @@ from flask import Blueprint, request, jsonify, current_app
 from app.database import db
 from app.models.style import Style, StyleImage
 from app.models.image import Image
+from app.models.lut_file import LutFile
+from app.models.lut_category import LutCategory
 from app.services.semantic_search_service import get_semantic_search_service
+from app.services.lut_extraction_service import LutExtractionService
+from app.utils.config_manager import get_local_image_dir
+from app.api.lut_file import get_lut_storage_dir
 import traceback
 import os
+import tempfile
+import hashlib
+import shutil
 from datetime import datetime
 
 bp = Blueprint('manual_style', __name__)
@@ -357,23 +365,172 @@ def remove_image_from_style(style_id, image_id):
 
 @bp.route('/<int:style_id>/extract-lut', methods=['POST'])
 def extract_lut(style_id):
-    """提取风格的LUT（后续实现）"""
+    """提取风格的LUT（方法2：从图片集合中提取）"""
     try:
         style = Style.query.filter_by(id=style_id, is_manual=True).first()
         if not style:
             return jsonify({'code': 404, 'message': '风格不存在'}), 404
         
-        # TODO: 实现LUT提取逻辑
+        # 检查是否有图片
+        style_images = StyleImage.query.filter_by(style_id=style_id).all()
+        if not style_images:
+            return jsonify({'code': 400, 'message': '风格中没有图片，无法提取LUT'}), 400
+        
+        # 获取所有图片的路径
+        image_paths = []
+        storage_base = get_local_image_dir()
+        
+        for style_image in style_images:
+            image = style_image.image
+            if not image or not image.storage_path:
+                continue
+            
+            # 构建完整文件路径
+            relative_path = image.storage_path.replace('\\', '/').lstrip('./').lstrip('.\\')
+            file_path = os.path.join(storage_base, relative_path)
+            file_path = os.path.normpath(file_path)
+            
+            if os.path.exists(file_path) and os.path.isfile(file_path):
+                image_paths.append(file_path)
+        
+        if not image_paths:
+            return jsonify({'code': 400, 'message': '没有找到有效的图片文件'}), 400
+        
+        current_app.logger.info(f"开始为风格 {style.name} 提取LUT，共 {len(image_paths)} 张图片")
+        
+        # 创建LUT提取服务
+        extraction_service = LutExtractionService()
+        
+        # 创建临时LUT文件
+        temp_dir = tempfile.gettempdir()
+        temp_lut_path = os.path.join(temp_dir, f"style_{style_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.cube")
+        
+        # 提取LUT
+        success, error_msg = extraction_service.extract_lut_from_images(image_paths, temp_lut_path)
+        
+        if not success:
+            return jsonify({'code': 500, 'message': f'LUT提取失败: {error_msg}'}), 500
+        
+        # 确保"手工风格定义"分类存在
+        category_name = '手工风格定义'
+        category = LutCategory.query.filter_by(name=category_name).first()
+        if not category:
+            category = LutCategory(
+                name=category_name,
+                description='从手工风格定义中提取的LUT文件',
+                sort_order=0
+            )
+            db.session.add(category)
+            db.session.flush()  # 获取ID
+            current_app.logger.info(f"创建新分类: {category_name}, ID: {category.id}")
+        
+        # 确保分类名称存在
+        if not category.name:
+            category.name = category_name
+            db.session.flush()
+        
+        current_app.logger.info(f"使用分类: {category.name}, ID: {category.id}")
+        
+        # 准备上传LUT文件
+        lut_storage_dir = get_lut_storage_dir()
+        category_dir = os.path.join(lut_storage_dir, str(category.id))
+        os.makedirs(category_dir, exist_ok=True)
+        
+        # 生成唯一文件名
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        original_filename = f"{style.name}_{timestamp}.cube"
+        unique_filename = f"{timestamp}_{os.urandom(4).hex()}_{original_filename}"
+        
+        # 保存LUT文件（使用shutil.move支持跨磁盘移动）
+        final_lut_path = os.path.join(category_dir, unique_filename)
+        shutil.move(temp_lut_path, final_lut_path)
+        
+        # 计算文件大小和哈希值
+        file_size = os.path.getsize(final_lut_path)
+        hash_md5 = hashlib.md5()
+        with open(final_lut_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(4096), b''):
+                hash_md5.update(chunk)
+        file_hash = hash_md5.hexdigest()
+        
+        # 检查是否已存在相同哈希的文件
+        existing_hash = LutFile.query.filter_by(file_hash=file_hash).first()
+        if existing_hash:
+            # 删除刚创建的文件
+            os.remove(final_lut_path)
+            return jsonify({
+                'code': 200,
+                'message': 'LUT文件已存在（相同哈希值）',
+                'data': {
+                    'lut_file_id': existing_hash.id,
+                    'lut_file_name': existing_hash.original_filename,
+                    'style_id': style_id,
+                    'style_name': style.name
+                }
+            })
+        
+        # 检查是否已存在相同的category_id和original_filename组合
+        existing_unique = LutFile.query.filter_by(
+            category_id=category.id,
+            original_filename=original_filename
+        ).first()
+        if existing_unique:
+            # 删除刚创建的文件
+            os.remove(final_lut_path)
+            return jsonify({
+                'code': 200,
+                'message': '该类别下已存在同名文件',
+                'data': {
+                    'lut_file_id': existing_unique.id,
+                    'lut_file_name': existing_unique.original_filename,
+                    'style_id': style_id,
+                    'style_name': style.name
+                }
+            })
+        
+        # 创建数据库记录
+        relative_path = os.path.join(str(category.id), unique_filename).replace('\\', '/')
+        lut_file = LutFile(
+            category_id=category.id,
+            filename=unique_filename,
+            original_filename=original_filename,
+            storage_path=relative_path,
+            file_size=file_size,
+            file_hash=file_hash,
+            description=f"从手工风格 '{style.name}' 提取的LUT文件，包含 {len(image_paths)} 张图片"
+        )
+        
+        db.session.add(lut_file)
+        db.session.commit()
+        
+        # 刷新对象以获取最新数据
+        db.session.refresh(lut_file)
+        db.session.refresh(category)
+        
+        current_app.logger.info(f"LUT提取成功，文件ID: {lut_file.id}, 文件名: {original_filename}, 分类: {category.name}")
+        
+        # 验证文件是否存在
+        if not os.path.exists(final_lut_path):
+            current_app.logger.error(f"LUT文件不存在: {final_lut_path}")
+            return jsonify({'code': 500, 'message': 'LUT文件保存失败，文件不存在'}), 500
+        
         return jsonify({
             'code': 200,
-            'message': 'LUT提取功能待实现',
+            'message': 'LUT提取成功',
             'data': {
+                'lut_file_id': lut_file.id,
+                'lut_file_name': lut_file.original_filename,
+                'lut_file_path': lut_file.storage_path,
                 'style_id': style_id,
                 'style_name': style.name,
-                'image_count': style.image_count
+                'image_count': len(image_paths),
+                'category_id': category.id,
+                'category_name': category.name or '手工风格定义'  # 确保有默认值
             }
         })
+        
     except Exception as e:
+        db.session.rollback()
         error_detail = traceback.format_exc()
         current_app.logger.error(f"提取LUT失败: {error_detail}")
         return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500

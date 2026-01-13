@@ -290,14 +290,39 @@ const ManualStyleImageManagement = () => {
   // 提取LUT
   const handleExtractLut = async () => {
     try {
+      message.loading({ content: '正在提取LUT，请稍候...', key: 'extractLut', duration: 0 })
       const response = await api.post(`/manual-styles/${styleId}/extract-lut`)
       if (response.code === 200) {
-        message.info('LUT提取功能待实现')
+        const data = response.data
+        if (data.lut_file_id) {
+          const categoryName = data.category_name || '手工风格定义'
+          message.success({
+            content: `LUT提取成功！文件：${data.lut_file_name}，已保存到"${categoryName}"分类，文件ID: ${data.lut_file_id}`,
+            key: 'extractLut',
+            duration: 5
+          })
+          // 刷新页面数据
+          fetchStyle()
+        } else {
+          message.info({
+            content: response.message || 'LUT提取完成',
+            key: 'extractLut',
+            duration: 3
+          })
+        }
       } else {
-        message.error(response.message || '提取失败')
+        message.error({
+          content: response.message || '提取失败',
+          key: 'extractLut',
+          duration: 3
+        })
       }
     } catch (error) {
-      message.error('提取失败：' + (error.response?.data?.message || error.message))
+      message.error({
+        content: '提取失败：' + (error.response?.data?.message || error.message),
+        key: 'extractLut',
+        duration: 5
+      })
     }
   }
 

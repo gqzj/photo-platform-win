@@ -167,6 +167,16 @@ def delete_feature(feature_id):
     """删除特征"""
     try:
         feature = Feature.query.get_or_404(feature_id)
+        
+        # 先清空与特征组的关联关系（避免级联删除时的期望更新行数问题）
+        from app.models.feature_group import FeatureGroupFeature
+        existing_relations = FeatureGroupFeature.query.filter_by(feature_id=feature_id).all()
+        for relation in existing_relations:
+            db.session.delete(relation)
+        # 刷新session以确保删除操作被记录
+        db.session.flush()
+        
+        # 删除特征
         db.session.delete(feature)
         db.session.commit()
         
@@ -190,7 +200,22 @@ def batch_delete_features():
         if not feature_ids:
             return jsonify({'code': 400, 'message': '请选择要删除的特征'}), 400
         
-        deleted_count = Feature.query.filter(Feature.id.in_(feature_ids)).delete(synchronize_session=False)
+        # 先查询存在的特征，然后逐个删除（避免期望更新行数的问题）
+        from app.models.feature_group import FeatureGroupFeature
+        features = Feature.query.filter(Feature.id.in_(feature_ids)).all()
+        deleted_count = 0
+        
+        for feature in features:
+            # 先清空与特征组的关联关系（避免级联删除时的期望更新行数问题）
+            existing_relations = FeatureGroupFeature.query.filter_by(feature_id=feature.id).all()
+            for relation in existing_relations:
+                db.session.delete(relation)
+            # 删除特征
+            db.session.delete(feature)
+            deleted_count += 1
+        
+        # 刷新session以确保所有操作被记录
+        db.session.flush()
         db.session.commit()
         
         return jsonify({

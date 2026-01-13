@@ -14,9 +14,13 @@ import {
   Upload,
   Progress,
   Alert,
-  Image
+  Image,
+  Spin,
+  Statistic,
+  Row,
+  Col
 } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, UploadOutlined, DownloadOutlined, FolderOutlined, ExperimentOutlined } from '@ant-design/icons'
+import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, UploadOutlined, DownloadOutlined, FolderOutlined, ExperimentOutlined, PlayCircleOutlined, PictureOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import api from '../services/api'
 
 const { Option } = Select
@@ -51,6 +55,16 @@ const LutFileManagement = () => {
   const [analyzePollingInterval, setAnalyzePollingInterval] = useState(null)
   const previousStatusRef = useRef(null) // 用于跟踪上一次的状态，避免重复提示
   const isInitialLoadRef = useRef(true) // 用于标记是否是首次加载
+  const [applyModalVisible, setApplyModalVisible] = useState(false)
+  const [applyingLutId, setApplyingLutId] = useState(null)
+  const [applyImageFile, setApplyImageFile] = useState(null)
+  const [applyImagePreview, setApplyImagePreview] = useState(null)
+  const [applyResult, setApplyResult] = useState(null)
+  const [applyLoading, setApplyLoading] = useState(false)
+  const [qualityModalVisible, setQualityModalVisible] = useState(false)
+  const [qualityAssessmentResult, setQualityAssessmentResult] = useState(null)
+  const [qualityLoading, setQualityLoading] = useState(false)
+  const [assessingLutId, setAssessingLutId] = useState(null)
 
   // 获取分类列表
   const fetchCategories = async () => {
@@ -242,6 +256,64 @@ const LutFileManagement = () => {
     }
   }
 
+  // 打开应用LUT模态框
+  const handleOpenApplyModal = (record) => {
+    setApplyingLutId(record.id)
+    setApplyImageFile(null)
+    setApplyImagePreview(null)
+    setApplyResult(null)
+    setApplyModalVisible(true)
+  }
+
+  // 处理图片上传（应用LUT）
+  const handleApplyImageUpload = (file) => {
+    const isImage = file.type.startsWith('image/')
+    if (!isImage) {
+      message.error('只能上传图片文件')
+      return false
+    }
+    setApplyImageFile(file)
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      setApplyImagePreview(e.target.result)
+    }
+    reader.readAsDataURL(file)
+    return false // 阻止自动上传
+  }
+
+  // 应用LUT到图片
+  const handleApplyLut = async () => {
+    if (!applyImageFile) {
+      message.warning('请先上传图片')
+      return
+    }
+
+    setApplyLoading(true)
+    setApplyResult(null)
+    
+    try {
+      const formData = new FormData()
+      formData.append('image', applyImageFile)
+
+      const response = await api.post(`/lut-files/${applyingLutId}/apply`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data'
+        }
+      })
+
+      if (response.code === 200) {
+        setApplyResult(response.data)
+        message.success('LUT应用成功')
+      } else {
+        message.error(response.message || '应用失败')
+      }
+    } catch (error) {
+      message.error('应用失败：' + (error.response?.data?.message || error.message))
+    } finally {
+      setApplyLoading(false)
+    }
+  }
+
   // 下载文件
   const handleDownload = async (id, filename) => {
     try {
@@ -259,6 +331,53 @@ const LutFileManagement = () => {
     } catch (error) {
       message.error('下载失败：' + (error.response?.data?.message || error.message))
       console.error('下载错误:', error)
+    }
+  }
+
+  // 生成缩略图
+  const handleGenerateThumbnail = async (id, filename) => {
+    try {
+      message.loading({ content: '正在生成缩略图...', key: 'generateThumbnail', duration: 0 })
+      const response = await api.post(`/lut-files/${id}/generate-thumbnail`)
+      if (response.code === 200) {
+        message.success({ content: '缩略图生成成功', key: 'generateThumbnail', duration: 3 })
+        fetchData(pagination.current, pagination.pageSize)
+      } else {
+        message.error({ content: response.message || '生成失败', key: 'generateThumbnail', duration: 3 })
+      }
+    } catch (error) {
+      message.error({ content: '生成失败：' + (error.response?.data?.message || error.message), key: 'generateThumbnail', duration: 5 })
+      console.error('生成缩略图错误:', error)
+    }
+  }
+
+  // 打开质量评估模态框
+  const handleOpenQualityModal = (record) => {
+    setAssessingLutId(record.id)
+    setQualityAssessmentResult(null)
+    setQualityModalVisible(true)
+    handleQualityAssessment(record.id)
+  }
+
+  // 执行质量评估
+  const handleQualityAssessment = async (id) => {
+    setQualityLoading(true)
+    setQualityAssessmentResult(null)
+    
+    try {
+      const response = await api.post(`/lut-files/${id}/quality-assessment`)
+      
+      if (response.code === 200) {
+        setQualityAssessmentResult(response.data)
+        message.success('质量评估完成')
+      } else {
+        message.error(response.message || '评估失败')
+      }
+    } catch (error) {
+      message.error('评估失败：' + (error.response?.data?.message || error.message))
+      console.error('质量评估错误:', error)
+    } finally {
+      setQualityLoading(false)
     }
   }
 
@@ -574,15 +693,47 @@ const LutFileManagement = () => {
     {
       title: '操作',
       key: 'action',
-      width: 250,
+      width: 200,
+      fixed: 'right',
       render: (_, record) => (
-        <Space wrap>
+        <Space wrap size="small">
+          <Button
+            type="link"
+            size="small"
+            icon={<PlayCircleOutlined />}
+            onClick={() => handleOpenApplyModal(record)}
+            disabled={!record.original_filename?.toLowerCase().endsWith('.cube')}
+            title="应用LUT"
+          >
+            应用
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            icon={<CheckCircleOutlined />}
+            onClick={() => handleOpenQualityModal(record)}
+            disabled={!record.original_filename?.toLowerCase().endsWith('.cube')}
+            title="质量评估"
+          >
+            质量评估
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            icon={<PictureOutlined />}
+            onClick={() => handleGenerateThumbnail(record.id, record.original_filename)}
+            disabled={!record.original_filename?.toLowerCase().endsWith('.cube')}
+            title="生成缩略图"
+          >
+            缩略图
+          </Button>
           <Button
             type="link"
             size="small"
             icon={<ExperimentOutlined />}
             onClick={() => handleAnalyze(record.id)}
             disabled={!record.original_filename?.toLowerCase().endsWith('.cube')}
+            title="分析"
           >
             分析
           </Button>
@@ -591,6 +742,7 @@ const LutFileManagement = () => {
             size="small"
             icon={<EditOutlined />}
             onClick={() => handleOpenModal(record)}
+            title="编辑"
           >
             编辑
           </Button>
@@ -599,6 +751,7 @@ const LutFileManagement = () => {
             size="small"
             icon={<DownloadOutlined />}
             onClick={() => handleDownload(record.id, record.original_filename)}
+            title="下载"
           >
             下载
           </Button>
@@ -613,6 +766,7 @@ const LutFileManagement = () => {
               danger
               size="small"
               icon={<DeleteOutlined />}
+              title="删除"
             >
               删除
             </Button>
@@ -816,6 +970,7 @@ const LutFileManagement = () => {
             dataSource={dataSource}
             loading={loading}
             rowKey="id"
+            scroll={{ x: 'max-content' }}
             pagination={{
               current: pagination.current,
               pageSize: pagination.pageSize,
@@ -994,6 +1149,287 @@ const LutFileManagement = () => {
             />
           </Card>
         </Space>
+      </Modal>
+
+      {/* 应用LUT模态框 */}
+      <Modal
+        title="应用LUT到图片"
+        open={applyModalVisible}
+        onCancel={() => {
+          setApplyModalVisible(false)
+          setApplyImageFile(null)
+          setApplyImagePreview(null)
+          setApplyResult(null)
+        }}
+        width={1200}
+        footer={[
+          <Button key="cancel" onClick={() => {
+            setApplyModalVisible(false)
+            setApplyImageFile(null)
+            setApplyImagePreview(null)
+            setApplyResult(null)
+          }}>
+            关闭
+          </Button>,
+          <Button
+            key="apply"
+            type="primary"
+            onClick={handleApplyLut}
+            loading={applyLoading}
+            disabled={!applyImageFile}
+          >
+            应用LUT
+          </Button>
+        ]}
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="large">
+          {/* 上传图片 */}
+          <div>
+            <div style={{ marginBottom: 8 }}>上传图片：</div>
+            <Upload
+              accept="image/*"
+              beforeUpload={handleApplyImageUpload}
+              showUploadList={false}
+            >
+              <Button icon={<UploadOutlined />}>选择图片</Button>
+            </Upload>
+            {applyImagePreview && (
+              <div style={{ marginTop: 16 }}>
+                <Image
+                  src={applyImagePreview}
+                  alt="预览"
+                  style={{ maxWidth: '100%', maxHeight: 300 }}
+                  preview={false}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* 对比结果 */}
+          {applyResult && (
+            <div>
+              <div style={{ marginBottom: 16, fontSize: 16, fontWeight: 'bold' }}>
+                对比结果：
+              </div>
+              <div style={{ display: 'flex', gap: 16, justifyContent: 'center', flexWrap: 'wrap' }}>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ marginBottom: 8, fontWeight: 'bold' }}>原图</div>
+                  <Image
+                    src={applyResult.original_image}
+                    alt="原图"
+                    style={{ maxWidth: '100%', maxHeight: 500 }}
+                    preview={{
+                      mask: '预览'
+                    }}
+                  />
+                </div>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ marginBottom: 8, fontWeight: 'bold' }}>应用LUT后</div>
+                  <Image
+                    src={applyResult.result_image}
+                    alt="结果图"
+                    style={{ maxWidth: '100%', maxHeight: 500 }}
+                    preview={{
+                      mask: '预览'
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+        </Space>
+      </Modal>
+
+      {/* 质量评估模态框 */}
+      <Modal
+        title="LUT质量评估"
+        open={qualityModalVisible}
+        onCancel={() => {
+          setQualityModalVisible(false)
+          setQualityAssessmentResult(null)
+        }}
+        width={1000}
+        footer={[
+          <Button key="close" onClick={() => {
+            setQualityModalVisible(false)
+            setQualityAssessmentResult(null)
+          }}>
+            关闭
+          </Button>
+        ]}
+      >
+        <Spin spinning={qualityLoading}>
+          {qualityAssessmentResult ? (
+            <Space direction="vertical" style={{ width: '100%' }} size="large">
+              {/* 总体评估 */}
+              <Card title="总体评估" size="small">
+                <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                  <div>
+                    <strong>整体质量：</strong>
+                    <Tag color={
+                      qualityAssessmentResult.conclusion?.overall_quality === 'excellent' ? 'green' :
+                      qualityAssessmentResult.conclusion?.overall_quality === 'good' ? 'blue' :
+                      qualityAssessmentResult.conclusion?.overall_quality === 'fair' ? 'orange' : 'red'
+                    }>
+                      {qualityAssessmentResult.conclusion?.overall_quality === 'excellent' ? '优秀' :
+                       qualityAssessmentResult.conclusion?.overall_quality === 'good' ? '良好' :
+                       qualityAssessmentResult.conclusion?.overall_quality === 'fair' ? '一般' : '较差'}
+                    </Tag>
+                  </div>
+                  <div>
+                    <strong>建议：</strong>
+                    <span>{qualityAssessmentResult.conclusion?.recommendation || '无'}</span>
+                  </div>
+                  {qualityAssessmentResult.conclusion?.details && qualityAssessmentResult.conclusion.details.length > 0 && (
+                    <div>
+                      <strong>详细说明：</strong>
+                      <ul style={{ marginTop: 8, marginBottom: 0 }}>
+                        {qualityAssessmentResult.conclusion.details.map((detail, index) => (
+                          <li key={index}>{detail}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </Space>
+              </Card>
+
+              {/* 色彩误差 */}
+              <Card title="色彩误差评估" size="small">
+                <Space direction="vertical" style={{ width: '100%' }} size="small">
+                  <div>
+                    <strong>色彩误差等级：</strong>
+                    <Tag color={
+                      qualityAssessmentResult.conclusion?.color_error_level === 'excellent' ? 'green' :
+                      qualityAssessmentResult.conclusion?.color_error_level === 'good' ? 'blue' :
+                      qualityAssessmentResult.conclusion?.color_error_level === 'fair' ? 'orange' : 'red'
+                    }>
+                      {qualityAssessmentResult.conclusion?.color_error_level === 'excellent' ? '极低' :
+                       qualityAssessmentResult.conclusion?.color_error_level === 'good' ? '较低' :
+                       qualityAssessmentResult.conclusion?.color_error_level === 'fair' ? '中等' :
+                       qualityAssessmentResult.conclusion?.color_error_level === 'poor' ? '较高' : '很高'}
+                    </Tag>
+                  </div>
+                  <Row gutter={16}>
+                    <Col span={8}>
+                      <Statistic
+                        title="总体色彩误差"
+                        value={qualityAssessmentResult.color_errors?.total_color_error?.toFixed(6) || '0.000000'}
+                        precision={6}
+                      />
+                    </Col>
+                    <Col span={8}>
+                      <Statistic
+                        title="中性色误差(均值)"
+                        value={qualityAssessmentResult.color_errors?.neutral_error_mean?.toFixed(6) || '0.000000'}
+                        precision={6}
+                      />
+                    </Col>
+                    <Col span={8}>
+                      <Statistic
+                        title="超出范围比例"
+                        value={(qualityAssessmentResult.color_errors?.out_of_range_ratio * 100)?.toFixed(2) || '0.00'}
+                        suffix="%"
+                        precision={2}
+                      />
+                    </Col>
+                  </Row>
+                  <Row gutter={16} style={{ marginTop: 16 }}>
+                    <Col span={8}>
+                      <Statistic
+                        title="中性色误差(最大值)"
+                        value={qualityAssessmentResult.color_errors?.neutral_error_max?.toFixed(6) || '0.000000'}
+                        precision={6}
+                      />
+                    </Col>
+                    <Col span={8}>
+                      <Statistic
+                        title="一致性误差(均值)"
+                        value={qualityAssessmentResult.color_errors?.consistency_error_mean?.toFixed(6) || '0.000000'}
+                        precision={6}
+                      />
+                    </Col>
+                    <Col span={8}>
+                      <Statistic
+                        title="一致性误差(最大值)"
+                        value={qualityAssessmentResult.color_errors?.consistency_error_max?.toFixed(6) || '0.000000'}
+                        precision={6}
+                      />
+                    </Col>
+                  </Row>
+                </Space>
+              </Card>
+
+              {/* 平滑度 */}
+              <Card title="平滑度评估" size="small">
+                <Space direction="vertical" style={{ width: '100%' }} size="small">
+                  <div>
+                    <strong>平滑度等级：</strong>
+                    <Tag color={
+                      qualityAssessmentResult.conclusion?.smoothness_level === 'excellent' ? 'green' :
+                      qualityAssessmentResult.conclusion?.smoothness_level === 'good' ? 'blue' :
+                      qualityAssessmentResult.conclusion?.smoothness_level === 'fair' ? 'orange' : 'red'
+                    }>
+                      {qualityAssessmentResult.conclusion?.smoothness_level === 'excellent' ? '极高' :
+                       qualityAssessmentResult.conclusion?.smoothness_level === 'good' ? '较高' :
+                       qualityAssessmentResult.conclusion?.smoothness_level === 'fair' ? '中等' :
+                       qualityAssessmentResult.conclusion?.smoothness_level === 'poor' ? '较低' : '很低'}
+                    </Tag>
+                  </div>
+                  <Row gutter={16}>
+                    <Col span={8}>
+                      <Statistic
+                        title="总体平滑度"
+                        value={qualityAssessmentResult.smoothness?.total_smoothness?.toFixed(4) || '0.0000'}
+                        precision={4}
+                      />
+                    </Col>
+                    <Col span={8}>
+                      <Statistic
+                        title="梯度均值"
+                        value={qualityAssessmentResult.smoothness?.gradient_mean?.toFixed(6) || '0.000000'}
+                        precision={6}
+                      />
+                    </Col>
+                    <Col span={8}>
+                      <Statistic
+                        title="梯度最大值"
+                        value={qualityAssessmentResult.smoothness?.gradient_max?.toFixed(6) || '0.000000'}
+                        precision={6}
+                      />
+                    </Col>
+                  </Row>
+                  <Row gutter={16} style={{ marginTop: 16 }}>
+                    <Col span={8}>
+                      <Statistic
+                        title="曲率均值"
+                        value={qualityAssessmentResult.smoothness?.curvature_mean?.toFixed(6) || '0.000000'}
+                        precision={6}
+                      />
+                    </Col>
+                    <Col span={8}>
+                      <Statistic
+                        title="局部变化(均值)"
+                        value={qualityAssessmentResult.smoothness?.local_variation_mean?.toFixed(6) || '0.000000'}
+                        precision={6}
+                      />
+                    </Col>
+                    <Col span={8}>
+                      <Statistic
+                        title="局部变化(最大值)"
+                        value={qualityAssessmentResult.smoothness?.local_variation_max?.toFixed(6) || '0.000000'}
+                        precision={6}
+                      />
+                    </Col>
+                  </Row>
+                </Space>
+              </Card>
+            </Space>
+          ) : (
+            <div style={{ textAlign: 'center', padding: '40px 0' }}>
+              {qualityLoading ? '正在评估...' : '暂无评估结果'}
+            </div>
+          )}
+        </Spin>
       </Modal>
     </div>
   )

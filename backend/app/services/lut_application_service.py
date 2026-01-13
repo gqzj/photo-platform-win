@@ -28,8 +28,32 @@ class LutApplicationService:
             3D LUT数组 (size, size, size, 3) 或 None
         """
         try:
-            with open(lut_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
+            logger.info(f"开始加载LUT文件: {lut_path}")
+            
+            # 检查文件是否存在
+            if not os.path.exists(lut_path):
+                logger.error(f"LUT文件不存在: {lut_path}")
+                return None
+            
+            # 尝试不同的编码方式
+            encodings = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']
+            lines = None
+            
+            for encoding in encodings:
+                try:
+                    with open(lut_path, 'r', encoding=encoding) as f:
+                        lines = f.readlines()
+                    logger.info(f"使用编码 {encoding} 成功读取LUT文件")
+                    break
+                except UnicodeDecodeError:
+                    continue
+                except Exception as e:
+                    logger.warning(f"使用编码 {encoding} 读取失败: {e}")
+                    continue
+            
+            if lines is None:
+                logger.error(f"无法读取LUT文件（尝试了所有编码）: {lut_path}")
+                return None
             
             # 查找LUT_3D_SIZE
             lut_size = None
@@ -38,10 +62,15 @@ class LutApplicationService:
             for i, line in enumerate(lines):
                 line = line.strip()
                 if line.startswith('LUT_3D_SIZE'):
-                    lut_size = int(line.split()[1])
-                elif line.startswith('0.') or line.startswith('1.') or (line[0].isdigit() and '.' in line):
+                    try:
+                        lut_size = int(line.split()[1])
+                        logger.info(f"找到LUT_3D_SIZE: {lut_size}")
+                    except (ValueError, IndexError) as e:
+                        logger.error(f"解析LUT_3D_SIZE失败: {line}, 错误: {e}")
+                elif line and (line.startswith('0.') or line.startswith('1.') or (line[0].isdigit() and '.' in line)):
                     if data_start is None:
                         data_start = i
+                        logger.info(f"找到数据起始行: {i}")
                     break
             
             if lut_size is None:
