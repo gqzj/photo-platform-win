@@ -507,7 +507,14 @@ const FeatureStyleDefinitionManagement = () => {
                         >
                           {features.map(feature => (
                             <Option key={feature.id} value={feature.id} label={feature.name}>
-                              {feature.name}
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span>{feature.name}</span>
+                                {feature.category && (
+                                  <Tag color="blue" style={{ marginLeft: 8, fontSize: 12 }}>
+                                    {feature.category}
+                                  </Tag>
+                                )}
+                              </div>
                             </Option>
                           ))}
                         </Select>
