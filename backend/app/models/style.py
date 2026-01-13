@@ -10,6 +10,7 @@ class Style(db.Model):
     name = db.Column(db.String(200), nullable=False, unique=True, comment='风格名称')
     description = db.Column(db.Text, comment='风格描述')
     sample_set_id = db.Column(db.Integer, db.ForeignKey('sample_sets.id', ondelete='SET NULL'), comment='关联的样本集ID')
+    is_manual = db.Column(db.Boolean, nullable=False, default=False, comment='是否为手工风格：False-否，True-是')
     status = db.Column(db.String(50), nullable=False, default='active', comment='状态：active, inactive')
     image_count = db.Column(db.Integer, nullable=False, default=0, comment='图片数量')
     processed_image_count = db.Column(db.Integer, nullable=False, default=0, comment='已处理图片数（美学评分）')
@@ -28,6 +29,8 @@ class Style(db.Model):
             'name': self.name,
             'description': self.description or '',
             'sample_set_id': self.sample_set_id,
+            'manual': self.is_manual,  # 保持API兼容性
+            'is_manual': self.is_manual,
             'status': self.status,
             'image_count': self.image_count,
             'processed_image_count': self.processed_image_count,

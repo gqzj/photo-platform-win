@@ -33,6 +33,8 @@ import ImageSimilarityTest from './pages/ImageSimilarityTest'
 import ImageFeatureAnalysis from './pages/ImageFeatureAnalysis'
 import SemanticSearch from './pages/SemanticSearch'
 import SemanticSearchSettings from './pages/SemanticSearchSettings'
+import ManualStyleManagement from './pages/ManualStyleManagement'
+import ManualStyleImageManagement from './pages/ManualStyleImageManagement'
 
 function App() {
   return (
@@ -65,6 +67,8 @@ function App() {
           <Route path="/style/management" element={<StyleManagement />} />
           <Route path="/style/view" element={<StyleImageView />} />
           <Route path="/style/match" element={<StyleMatch />} />
+          <Route path="/style/manual" element={<ManualStyleManagement />} />
+          <Route path="/style/manual/:styleId/images" element={<ManualStyleImageManagement />} />
           <Route path="/lut-analysis/files" element={<LutFileManagement />} />
           <Route path="/lut-analysis/sample-images" element={<SampleImageManagement />} />
           <Route path="/lut-analysis/sample-images/:imageId/lut-results" element={<SampleImageLutResults />} />

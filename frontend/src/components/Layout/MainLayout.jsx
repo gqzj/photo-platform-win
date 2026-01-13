@@ -234,6 +234,11 @@ const MainLayout = ({ children }) => {
           label: '风格定义管理'
         },
         {
+          key: '/style/manual',
+          icon: <FileTextOutlined />,
+          label: '手工风格定义'
+        },
+        {
           key: '/style/match',
           icon: <SearchOutlined />,
           label: '风格匹配'
