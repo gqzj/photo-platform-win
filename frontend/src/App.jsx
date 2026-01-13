@@ -35,6 +35,9 @@ import SemanticSearch from './pages/SemanticSearch'
 import SemanticSearchSettings from './pages/SemanticSearchSettings'
 import ManualStyleManagement from './pages/ManualStyleManagement'
 import ManualStyleImageManagement from './pages/ManualStyleImageManagement'
+import FeatureStyleDefinitionManagement from './pages/FeatureStyleDefinitionManagement'
+import FeatureStyleSubStyleList from './pages/FeatureStyleSubStyleList'
+import FeatureStyleSubStyleImageManagement from './pages/FeatureStyleSubStyleImageManagement'
 
 function App() {
   return (
@@ -69,6 +72,9 @@ function App() {
           <Route path="/style/match" element={<StyleMatch />} />
           <Route path="/style/manual" element={<ManualStyleManagement />} />
           <Route path="/style/manual/:styleId/images" element={<ManualStyleImageManagement />} />
+          <Route path="/style/feature-style-definition" element={<FeatureStyleDefinitionManagement />} />
+          <Route path="/style/feature-style-definition/:definitionId/sub-styles" element={<FeatureStyleSubStyleList />} />
+          <Route path="/style/feature-style-definition/:definitionId/sub-styles/:subStyleId/images" element={<FeatureStyleSubStyleImageManagement />} />
           <Route path="/lut-analysis/files" element={<LutFileManagement />} />
           <Route path="/lut-analysis/sample-images" element={<SampleImageManagement />} />
           <Route path="/lut-analysis/sample-images/:imageId/lut-results" element={<SampleImageLutResults />} />
