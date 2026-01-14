@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Card, Input, Button, Upload, Row, Col, Image, Spin, message, Empty, Space, Tag, Popconfirm } from 'antd'
+import { Card, Input, Button, Upload, Row, Col, Image, Spin, message, Empty, Space, Tag } from 'antd'
 import { SearchOutlined, UploadOutlined, PictureOutlined, FileTextOutlined, DeleteOutlined } from '@ant-design/icons'
 import api from '../services/api'
 // 获取图片URL的工具函数
@@ -299,21 +299,16 @@ const SemanticSearch = () => {
                             right: 8,
                             zIndex: 10
                           }}>
-                            <Popconfirm
-                              title="确定要删除这张图片吗？"
-                              description="图片将被移动到回收站，清洗原因为'人工删除'"
-                              onConfirm={() => handleDeleteImage(result.image_id)}
-                              okText="确定"
-                              cancelText="取消"
-                            >
-                              <Button
-                                type="primary"
-                                danger
-                                size="small"
-                                icon={<DeleteOutlined />}
-                                onClick={(e) => e.stopPropagation()}
-                              />
-                            </Popconfirm>
+                            <Button
+                              type="primary"
+                              danger
+                              size="small"
+                              icon={<DeleteOutlined />}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleDeleteImage(result.image_id)
+                              }}
+                            />
                           </div>
                         </div>
                       }

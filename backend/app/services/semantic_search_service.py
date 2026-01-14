@@ -266,8 +266,15 @@ class SemanticSearchService:
             logger.error(traceback.format_exc())
             raise
     
-    def add_image_vector(self, image_id, vector):
-        """添加图片向量到FAISS索引"""
+    def add_image_vector(self, image_id, vector, save_index=True):
+        """
+        添加图片向量到FAISS索引
+        
+        Args:
+            image_id: 图片ID
+            vector: 图片向量
+            save_index: 是否立即保存索引（默认True，多线程时可以设为False批量保存）
+        """
         if not self._initialized:
             self.initialize()
         
@@ -292,8 +299,9 @@ class SemanticSearchService:
             self.image_id_to_index[image_id] = faiss_index
             self.index_to_image_id[faiss_index] = image_id
             
-            # 保存索引和映射
-            self._save_index()
+            # 保存索引和映射（如果指定）
+            if save_index:
+                self._save_index()
             
             return faiss_index
         except Exception as e:

@@ -283,9 +283,16 @@ def recycle_style_image(style_id, image_id):
         # 删除该图片的美学评分记录（避免外键约束错误）
         AestheticScore.query.filter_by(image_id=image_id).delete()
         
+        # 删除特征风格子风格图片关联记录（避免外键约束错误）
+        from app.models.feature_style_definition import FeatureStyleSubStyleImage
+        FeatureStyleSubStyleImage.query.filter_by(image_id=image_id).delete()
+        
         # 删除图片的打标结果（可选，如果需要保留历史记录可以注释掉）
         # ImageTaggingResultDetail.query.filter_by(image_id=image_id).delete()
         # ImageTaggingResult.query.filter_by(image_id=image_id).delete()
+        
+        # 刷新session以确保删除操作被记录
+        db.session.flush()
         
         # 从images表删除
         db.session.delete(image)

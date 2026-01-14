@@ -9,10 +9,12 @@ from app.models.semantic_search import SemanticSearchImage
 from app.models.image_recycle import ImageRecycle
 from app.services.semantic_search_service import get_semantic_search_service
 from app.utils.config_manager import get_local_image_dir
-from threading import Thread
+import threading
+from threading import Thread, Lock
 import traceback
 import os
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 bp = Blueprint('semantic_search', __name__)
 
@@ -26,6 +28,9 @@ _encoding_task_status = {
     'current_image_id': None,
     'error_message': None
 }
+
+# 线程锁，用于保护共享资源
+_encoding_lock = Lock()
 
 @bp.route('/stats', methods=['GET'])
 def get_stats():
@@ -188,8 +193,91 @@ def search_by_image():
         current_app.logger.error(f"图片搜索失败: {error_detail}")
         return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
 
+def _encode_single_image(image_id, image_path, image_dir):
+    """
+    编码单张图片（线程安全）
+    每个线程独立处理一张图片，确保数据不会互串
+    """
+    global _encoding_task_status, _encoding_lock
+    
+    # 每个线程需要创建独立的 Flask 应用上下文和数据库会话
+    from app import create_app
+    app = create_app()
+    
+    with app.app_context():
+        try:
+            # 构建完整的图片路径
+            full_image_path = os.path.join(image_dir, image_path) if image_path else None
+            if not full_image_path or not os.path.exists(full_image_path):
+                app.logger.warning(f"图片文件不存在: {full_image_path} (image_id={image_id})")
+                with _encoding_lock:
+                    _encoding_task_status['processed'] += 1
+                    _encoding_task_status['failed'] += 1
+                return {'success': False, 'image_id': image_id, 'error': '图片文件不存在'}
+            
+            # 获取服务实例（每个线程独立获取，但共享同一个模型实例）
+            service = get_semantic_search_service()
+            service.initialize()
+            
+            # 编码图片（这一步是独立的，不会与其他线程冲突）
+            app.logger.debug(f"[线程 {threading.current_thread().name}] 正在编码图片 image_id={image_id}, path={full_image_path}")
+            vector = service.encode_image(full_image_path)
+            
+            # 使用锁保护共享资源（FAISS索引和数据库）
+            with _encoding_lock:
+                # 添加到FAISS索引（需要加锁，因为FAISS索引是共享的）
+                # 不立即保存索引，避免文件I/O阻塞（批量保存）
+                vector_id = service.add_image_vector(image_id, vector, save_index=False)
+                
+                # 更新数据库记录（需要加锁，因为数据库会话是共享的）
+                semantic_record = SemanticSearchImage.query.filter_by(image_id=image_id).first()
+                if semantic_record:
+                    semantic_record.encoded = True
+                    semantic_record.vector_id = str(vector_id) if vector_id else None
+                    semantic_record.encoded_at = datetime.now()
+                else:
+                    semantic_record = SemanticSearchImage(
+                        image_id=image_id,
+                        vector_id=str(vector_id) if vector_id else None,
+                        encoded=True,
+                        encoded_at=datetime.now()
+                    )
+                    db.session.add(semantic_record)
+                
+                db.session.commit()
+                
+                # 更新状态（需要加锁）
+                _encoding_task_status['processed'] += 1
+                _encoding_task_status['success'] += 1
+                _encoding_task_status['current_image_id'] = image_id
+                
+                # 每10张图片保存一次索引并记录进度（减少文件I/O频率）
+                if _encoding_task_status['processed'] % 10 == 0:
+                    # 在锁内保存索引（批量保存）
+                    try:
+                        service._save_index()
+                    except Exception as save_error:
+                        app.logger.warning(f"保存索引失败: {str(save_error)}")
+                    
+                    app.logger.info(f"编码进度: {_encoding_task_status['processed']}/{_encoding_task_status['total']} "
+                                  f"(成功: {_encoding_task_status['success']}, 失败: {_encoding_task_status['failed']})")
+            
+            return {'success': True, 'image_id': image_id, 'vector_id': vector_id}
+            
+        except Exception as e:
+            error_detail = traceback.format_exc()
+            app.logger.error(f"[线程 {threading.current_thread().name}] 编码图片失败 image_id={image_id}: {str(e)}")
+            app.logger.debug(f"错误详情: {error_detail}")
+            
+            with _encoding_lock:
+                _encoding_task_status['processed'] += 1
+                _encoding_task_status['failed'] += 1
+                db.session.rollback()
+            
+            return {'success': False, 'image_id': image_id, 'error': str(e)}
+
 def _encode_images_task():
-    """后台编码任务"""
+    """后台编码任务（多线程版本）"""
     global _encoding_task_status
     
     # 在后台线程中需要创建 Flask 应用上下文
@@ -205,9 +293,10 @@ def _encode_images_task():
             _encoding_task_status['error_message'] = None
             
             app.logger.info("=" * 60)
-            app.logger.info("语义编码任务开始")
+            app.logger.info("语义编码任务开始（多线程模式）")
             app.logger.info("=" * 60)
             
+            # 初始化服务（在主线程中初始化一次）
             service = get_semantic_search_service()
             service.initialize()
             
@@ -222,59 +311,52 @@ def _encode_images_task():
                 images = Image.query.filter_by(status='active').all()
             
             _encoding_task_status['total'] = len(images)
-            app.logger.info(f"开始编码 {len(images)} 张图片")
+            app.logger.info(f"开始编码 {len(images)} 张图片（使用多线程）")
             
             image_dir = get_local_image_dir()
             
+            # 准备图片数据（每个线程处理的数据是独立的）
+            image_tasks = []
             for image in images:
-                _encoding_task_status['current_image_id'] = image.id
-                _encoding_task_status['processed'] += 1
+                image_tasks.append({
+                    'image_id': image.id,
+                    'image_path': image.storage_path,
+                    'image_dir': image_dir
+                })
+            
+            # 使用线程池处理（默认使用4个线程，可以根据需要调整）
+            max_workers = min(4, len(image_tasks))  # 最多4个线程，或图片数量（如果少于4张）
+            if max_workers == 0:
+                max_workers = 1
+            
+            app.logger.info(f"使用 {max_workers} 个线程进行编码")
+            
+            # 使用线程池执行编码任务
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 提交所有任务
+                future_to_image = {
+                    executor.submit(_encode_single_image, task['image_id'], task['image_path'], task['image_dir']): task['image_id']
+                    for task in image_tasks
+                }
                 
-                try:
-                    # 构建图片路径
-                    image_path = os.path.join(image_dir, image.storage_path)
-                    if not os.path.exists(image_path):
-                        app.logger.warning(f"图片文件不存在: {image_path} (image_id={image.id})")
-                        _encoding_task_status['failed'] += 1
-                        continue
-                    
-                    # 编码图片
-                    app.logger.debug(f"正在编码图片 image_id={image.id}, path={image_path}")
-                    vector = service.encode_image(image_path)
-                    
-                    # 添加到FAISS索引
-                    vector_id = service.add_image_vector(image.id, vector)
-                    
-                    # 更新数据库记录
-                    semantic_record = SemanticSearchImage.query.filter_by(image_id=image.id).first()
-                    if semantic_record:
-                        semantic_record.encoded = True
-                        semantic_record.vector_id = str(vector_id) if vector_id else None
-                        semantic_record.encoded_at = datetime.now()
-                    else:
-                        semantic_record = SemanticSearchImage(
-                            image_id=image.id,
-                            vector_id=str(vector_id) if vector_id else None,
-                            encoded=True,
-                            encoded_at=datetime.now()
-                        )
-                        db.session.add(semantic_record)
-                    
-                    db.session.commit()
-                    _encoding_task_status['success'] += 1
-                    
-                    # 每10张图片记录一次进度（而不是100张）
-                    if _encoding_task_status['processed'] % 10 == 0:
-                        app.logger.info(f"编码进度: {_encoding_task_status['processed']}/{_encoding_task_status['total']} "
-                                      f"(成功: {_encoding_task_status['success']}, 失败: {_encoding_task_status['failed']})")
-                    
-                except Exception as e:
-                    _encoding_task_status['failed'] += 1
-                    error_detail = traceback.format_exc()
-                    app.logger.error(f"编码图片失败 image_id={image.id}: {str(e)}")
-                    app.logger.debug(f"错误详情: {error_detail}")
-                    db.session.rollback()
-                    continue
+                # 等待所有任务完成
+                for future in as_completed(future_to_image):
+                    image_id = future_to_image[future]
+                    try:
+                        result = future.result()
+                        if result['success']:
+                            app.logger.debug(f"图片编码成功: image_id={image_id}")
+                        else:
+                            app.logger.warning(f"图片编码失败: image_id={image_id}, error={result.get('error', 'Unknown error')}")
+                    except Exception as e:
+                        app.logger.error(f"处理图片编码结果时出错 image_id={image_id}: {str(e)}")
+            
+            # 任务结束时，最后保存一次索引
+            try:
+                service._save_index()
+                app.logger.info("FAISS索引已保存")
+            except Exception as save_error:
+                app.logger.warning(f"最后保存索引失败: {str(save_error)}")
             
             app.logger.info("=" * 60)
             app.logger.info(f"编码任务完成: 总计 {_encoding_task_status['total']} 张, "
@@ -287,6 +369,14 @@ def _encode_images_task():
             _encoding_task_status['error_message'] = str(e)
             app.logger.error(f"编码任务失败: {error_detail}")
         finally:
+            # 确保在任务结束时保存索引
+            try:
+                service = get_semantic_search_service()
+                if service._initialized:
+                    service._save_index()
+            except Exception as save_error:
+                app.logger.warning(f"任务结束时保存索引失败: {str(save_error)}")
+            
             _encoding_task_status['running'] = False
             _encoding_task_status['current_image_id'] = None
             app.logger.info("语义编码任务结束")
@@ -381,6 +471,17 @@ def recycle_image(image_id):
         # 删除该图片的美学评分记录（避免外键约束错误）
         from app.models.aesthetic_score import AestheticScore
         AestheticScore.query.filter_by(image_id=image_id).delete()
+        
+        # 删除特征风格子风格图片关联记录（避免外键约束错误）
+        from app.models.feature_style_definition import FeatureStyleSubStyleImage
+        FeatureStyleSubStyleImage.query.filter_by(image_id=image_id).delete()
+        
+        # 删除风格图片关联记录（避免外键约束错误）
+        from app.models.style import StyleImage
+        StyleImage.query.filter_by(image_id=image_id).delete()
+        
+        # 刷新session以确保删除操作被记录
+        db.session.flush()
         
         # 从images表删除
         db.session.delete(image)
