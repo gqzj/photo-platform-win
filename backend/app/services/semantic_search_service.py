@@ -164,15 +164,44 @@ class SemanticSearchService:
             # 尝试加载现有索引
             if os.path.exists(self.faiss_index_path) and os.path.exists(self.faiss_mapping_path):
                 logger.info(f"加载现有FAISS索引: {self.faiss_index_path}")
-                self.index = faiss.read_index(self.faiss_index_path)
-                
-                # 加载映射关系
-                with open(self.faiss_mapping_path, 'rb') as f:
-                    mapping_data = pickle.load(f)
-                    self.image_id_to_index = mapping_data.get('image_id_to_index', {})
-                    self.index_to_image_id = mapping_data.get('index_to_image_id', {})
-                
-                logger.info(f"✅ FAISS索引加载成功，包含 {self.index.ntotal} 个向量")
+                try:
+                    self.index = faiss.read_index(self.faiss_index_path)
+                    
+                    # 加载映射关系
+                    with open(self.faiss_mapping_path, 'rb') as f:
+                        mapping_data = pickle.load(f)
+                        self.image_id_to_index = mapping_data.get('image_id_to_index', {})
+                        self.index_to_image_id = mapping_data.get('index_to_image_id', {})
+                    
+                    logger.info(f"✅ FAISS索引加载成功，包含 {self.index.ntotal} 个向量")
+                except Exception as load_error:
+                    # 索引文件损坏，备份并重建
+                    logger.error(f"FAISS索引文件损坏，尝试重建: {str(load_error)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    
+                    # 备份损坏的文件
+                    import shutil
+                    from datetime import datetime
+                    backup_suffix = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    try:
+                        if os.path.exists(self.faiss_index_path):
+                            backup_index_path = f"{self.faiss_index_path}.corrupted_{backup_suffix}"
+                            shutil.move(self.faiss_index_path, backup_index_path)
+                            logger.warning(f"已备份损坏的索引文件到: {backup_index_path}")
+                        if os.path.exists(self.faiss_mapping_path):
+                            backup_mapping_path = f"{self.faiss_mapping_path}.corrupted_{backup_suffix}"
+                            shutil.move(self.faiss_mapping_path, backup_mapping_path)
+                            logger.warning(f"已备份损坏的映射文件到: {backup_mapping_path}")
+                    except Exception as backup_error:
+                        logger.warning(f"备份损坏文件失败: {str(backup_error)}")
+                    
+                    # 创建新索引
+                    logger.info(f"创建新的FAISS索引（维度: {self.dimension}）")
+                    self.index = faiss.IndexFlatIP(self.dimension)
+                    self.image_id_to_index = {}
+                    self.index_to_image_id = {}
+                    logger.info("✅ FAISS索引重建成功（原索引文件已损坏）")
             else:
                 # 创建新索引
                 # 使用IndexFlatIP（内积），因为向量已经归一化，内积等价于余弦相似度
@@ -188,24 +217,56 @@ class SemanticSearchService:
             raise
     
     def _save_index(self):
-        """保存FAISS索引和映射关系"""
+        """保存FAISS索引和映射关系（使用临时文件+原子替换，避免文件损坏）"""
         try:
             if self.index is not None:
-                faiss.write_index(self.index, self.faiss_index_path)
+                # 使用临时文件写入，然后原子替换，避免写入过程中文件损坏
+                import tempfile
+                import shutil
+                
+                # 保存索引到临时文件
+                temp_index_path = f"{self.faiss_index_path}.tmp"
+                faiss.write_index(self.index, temp_index_path)
+                
+                # 原子替换（Windows上使用move，Linux上使用rename）
+                if os.path.exists(self.faiss_index_path):
+                    os.replace(temp_index_path, self.faiss_index_path)
+                else:
+                    shutil.move(temp_index_path, self.faiss_index_path)
+                
                 logger.debug(f"FAISS索引已保存: {self.faiss_index_path}")
             
-            # 保存映射关系
+            # 保存映射关系到临时文件，然后原子替换
             mapping_data = {
                 'image_id_to_index': self.image_id_to_index,
                 'index_to_image_id': self.index_to_image_id
             }
-            with open(self.faiss_mapping_path, 'wb') as f:
+            temp_mapping_path = f"{self.faiss_mapping_path}.tmp"
+            with open(temp_mapping_path, 'wb') as f:
                 pickle.dump(mapping_data, f)
+            
+            # 原子替换
+            if os.path.exists(self.faiss_mapping_path):
+                os.replace(temp_mapping_path, self.faiss_mapping_path)
+            else:
+                shutil.move(temp_mapping_path, self.faiss_mapping_path)
+            
             logger.debug(f"映射关系已保存: {self.faiss_mapping_path}")
         except Exception as e:
             logger.error(f"保存FAISS索引失败: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
+            
+            # 清理临时文件
+            try:
+                temp_index_path = f"{self.faiss_index_path}.tmp"
+                if os.path.exists(temp_index_path):
+                    os.remove(temp_index_path)
+                temp_mapping_path = f"{self.faiss_mapping_path}.tmp"
+                if os.path.exists(temp_mapping_path):
+                    os.remove(temp_mapping_path)
+            except:
+                pass
     
     def encode_image(self, image_path):
         """编码单张图片为向量"""

@@ -119,7 +119,7 @@ const MainLayout = ({ children }) => {
         {
           key: '/semantic-search',
           icon: <SearchOutlined />,
-          label: '语义搜索'
+          label: '语义搜索(修复中)'
         },
         {
           key: '/library/feature-query',

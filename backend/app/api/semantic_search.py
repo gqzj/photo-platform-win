@@ -324,8 +324,8 @@ def _encode_images_task():
                     'image_dir': image_dir
                 })
             
-            # 使用线程池处理（默认使用4个线程，可以根据需要调整）
-            max_workers = min(4, len(image_tasks))  # 最多4个线程，或图片数量（如果少于4张）
+            # 使用线程池处理（默认使用10个线程，可以根据需要调整）
+            max_workers = min(10, len(image_tasks))  # 最多10个线程，或图片数量（如果少于10张）
             if max_workers == 0:
                 max_workers = 1
             
