@@ -38,6 +38,7 @@ import ManualStyleImageManagement from './pages/ManualStyleImageManagement'
 import FeatureStyleDefinitionManagement from './pages/FeatureStyleDefinitionManagement'
 import FeatureStyleSubStyleList from './pages/FeatureStyleSubStyleList'
 import FeatureStyleSubStyleImageManagement from './pages/FeatureStyleSubStyleImageManagement'
+import FeatureQuery from './pages/FeatureQuery'
 
 function App() {
   return (
@@ -50,6 +51,7 @@ function App() {
           <Route path="/library/posts" element={<PostList />} />
           <Route path="/library/keywords" element={<KeywordView />} />
           <Route path="/library/recycle" element={<ImageRecycle />} />
+          <Route path="/library/feature-query" element={<FeatureQuery />} />
           <Route path="/crawler/cookies" element={<CrawlerCookie />} />
           <Route path="/crawler/tasks" element={<CrawlerTask />} />
           <Route path="/tagging" element={<ImageTagging />} />

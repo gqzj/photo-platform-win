@@ -54,6 +54,71 @@ const ImageLibrary = () => {
     }
   }, [images, pendingPageChange])
 
+  // 保存图片（下载）
+  const handleSaveImage = async (image) => {
+    try {
+      const imageUrl = getImageUrl(image)
+      if (!imageUrl) {
+        message.error('图片URL不存在，无法保存')
+        return
+      }
+
+      // 创建下载链接
+      const link = document.createElement('a')
+      link.href = imageUrl
+      link.download = image.filename || `image_${image.id}.jpg`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      
+      message.success('图片保存成功')
+    } catch (error) {
+      message.error('保存图片失败：' + error.message)
+      console.error('保存图片错误:', error)
+    }
+  }
+
+  // 删除图片（移动到回收站）
+  const handleDeleteImage = async (image) => {
+    try {
+      const response = await api.post(`/images/${image.id}/recycle`)
+      if (response.code === 200) {
+        message.success('图片已移动到回收站')
+        // 从列表中移除
+        const newImages = images.filter(img => img.id !== image.id)
+        setImages(newImages)
+        
+        // 如果删除的是当前预览的图片，关闭预览或切换到下一张
+        if (previewIndex >= 0 && previewIndex < images.length && images[previewIndex].id === image.id) {
+          if (newImages.length > 0) {
+            // 如果还有图片，切换到下一张（如果删除的是最后一张，切换到上一张）
+            const newIndex = previewIndex < newImages.length ? previewIndex : previewIndex - 1
+            if (newIndex >= 0) {
+              setPreviewIndex(newIndex)
+            } else {
+              setPreviewVisible(false)
+              setPreviewIndex(-1)
+            }
+          } else {
+            setPreviewVisible(false)
+            setPreviewIndex(-1)
+          }
+        }
+        
+        // 更新总数
+        setPagination(prev => ({
+          ...prev,
+          total: prev.total - 1
+        }))
+      } else {
+        message.error(response.message || '删除失败')
+      }
+    } catch (error) {
+      message.error('删除失败：' + (error.response?.data?.message || error.message))
+      console.error('删除图片错误:', error)
+    }
+  }
+
   // 键盘事件监听
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -70,6 +135,40 @@ const ImageLibrary = () => {
         } else if (e.key === 'ArrowRight') {
           handleNextImage()
         }
+        return
+      }
+
+      // 检查是否按下了S键（保存）
+      if (e.key === 's' || e.key === 'S') {
+        // 避免在输入框中触发
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+          return
+        }
+        e.preventDefault()
+        e.stopPropagation()
+        
+        const currentImage = images[previewIndex]
+        if (currentImage) {
+          handleSaveImage(currentImage)
+        }
+        return
+      }
+
+      // 检查是否按下了Delete键（删除）
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        // 避免在输入框中触发
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+          return
+        }
+        e.preventDefault()
+        e.stopPropagation()
+        
+        const currentImage = images[previewIndex]
+        if (currentImage) {
+          // 直接删除，不需要确认
+          handleDeleteImage(currentImage)
+        }
+        return
       }
     }
 

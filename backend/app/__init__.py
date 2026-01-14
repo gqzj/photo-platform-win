@@ -57,7 +57,7 @@ def create_app():
     CORS(app, resources={r"/api/*": {"origins": "*"}})
     
     # 注册蓝图
-    from app.api import image_capture, image_tagging, image_statistics, crawler_cookie, crawler_task, post, settings, feature, data_cleaning_task, image_recycle, tagging_task, image_cleaning_test, image_tagging_test, sample_set, keyword_statistics, feature_analysis, requirement, feature_group, style, style_match, lut_category, lut_file, sample_image, tools, semantic_search, manual_style, feature_style_definition
+    from app.api import image_capture, image_tagging, image_statistics, crawler_cookie, crawler_task, post, settings, feature, data_cleaning_task, image_recycle, tagging_task, image_cleaning_test, image_tagging_test, sample_set, keyword_statistics, feature_analysis, requirement, feature_group, style, style_match, lut_category, lut_file, sample_image, tools, semantic_search, manual_style, feature_style_definition, feature_query
     
     app.register_blueprint(image_capture.bp, url_prefix='/api/images/capture')
     app.register_blueprint(image_tagging.bp, url_prefix='/api/images')
@@ -86,6 +86,7 @@ def create_app():
     app.register_blueprint(semantic_search.bp, url_prefix='/api/semantic-search')
     app.register_blueprint(manual_style.bp, url_prefix='/api/manual-styles')
     app.register_blueprint(feature_style_definition.bp, url_prefix='/api/feature-style-definitions')
+    app.register_blueprint(feature_query.bp, url_prefix='/api/feature-query')
     
     return app
 

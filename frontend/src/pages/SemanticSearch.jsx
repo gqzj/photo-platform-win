@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
-import { Card, Input, Button, Upload, Row, Col, Image, Spin, message, Empty, Space, Tag } from 'antd'
-import { SearchOutlined, UploadOutlined, PictureOutlined, FileTextOutlined } from '@ant-design/icons'
+import { Card, Input, Button, Upload, Row, Col, Image, Spin, message, Empty, Space, Tag, Popconfirm } from 'antd'
+import { SearchOutlined, UploadOutlined, PictureOutlined, FileTextOutlined, DeleteOutlined } from '@ant-design/icons'
 import api from '../services/api'
 // 获取图片URL的工具函数
 const getImageUrl = (image) => {
@@ -25,7 +25,7 @@ const SemanticSearch = () => {
   const [imagePreview, setImagePreview] = useState(null)
   const [results, setResults] = useState([])
   const [loading, setLoading] = useState(false)
-  const [topK, setTopK] = useState(10)
+  const [topK, setTopK] = useState(100)
 
   // 文本搜索
   const handleTextSearch = async () => {
@@ -122,6 +122,22 @@ const SemanticSearch = () => {
     setImagePreview(null)
   }
 
+  // 删除图片（移动到回收站）
+  const handleDeleteImage = async (imageId) => {
+    try {
+      const response = await api.post(`/semantic-search/images/${imageId}/recycle`)
+      if (response.code === 200) {
+        message.success('图片已移动到回收站')
+        // 从结果列表中移除该图片
+        setResults(results.filter(result => result.image_id !== imageId))
+      } else {
+        message.error(response.message || '删除失败')
+      }
+    } catch (error) {
+      message.error('删除失败：' + (error.response?.data?.message || error.message))
+    }
+  }
+
   return (
     <div style={{ padding: '24px' }}>
       <Card title="图片语义搜索" style={{ marginBottom: 16 }}>
@@ -170,10 +186,10 @@ const SemanticSearch = () => {
                     type="number"
                     placeholder="返回数量"
                     value={topK}
-                    onChange={(e) => setTopK(parseInt(e.target.value) || 10)}
+                    onChange={(e) => setTopK(parseInt(e.target.value) || 100)}
                     style={{ width: 120 }}
                     min={1}
-                    max={100}
+                    max={1000}
                   />
                   <Button
                     type="primary"
@@ -218,10 +234,10 @@ const SemanticSearch = () => {
                     type="number"
                     placeholder="返回数量"
                     value={topK}
-                    onChange={(e) => setTopK(parseInt(e.target.value) || 10)}
+                    onChange={(e) => setTopK(parseInt(e.target.value) || 100)}
                     style={{ width: 120 }}
                     min={1}
-                    max={100}
+                    max={1000}
                   />
                   <Button
                     type="primary"
@@ -262,7 +278,8 @@ const SemanticSearch = () => {
                           backgroundColor: '#f5f5f5',
                           display: 'flex',
                           alignItems: 'center',
-                          justifyContent: 'center'
+                          justifyContent: 'center',
+                          position: 'relative'
                         }}>
                           <Image
                             src={imageUrl}
@@ -276,6 +293,28 @@ const SemanticSearch = () => {
                               mask: '预览'
                             }}
                           />
+                          <div style={{
+                            position: 'absolute',
+                            top: 8,
+                            right: 8,
+                            zIndex: 10
+                          }}>
+                            <Popconfirm
+                              title="确定要删除这张图片吗？"
+                              description="图片将被移动到回收站，清洗原因为'人工删除'"
+                              onConfirm={() => handleDeleteImage(result.image_id)}
+                              okText="确定"
+                              cancelText="取消"
+                            >
+                              <Button
+                                type="primary"
+                                danger
+                                size="small"
+                                icon={<DeleteOutlined />}
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                            </Popconfirm>
+                          </div>
                         </div>
                       }
                       bodyStyle={{ padding: 12 }}

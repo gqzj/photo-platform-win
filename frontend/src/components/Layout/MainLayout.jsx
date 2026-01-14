@@ -117,6 +117,16 @@ const MainLayout = ({ children }) => {
           label: '抓取图片库'
         },
         {
+          key: '/semantic-search',
+          icon: <SearchOutlined />,
+          label: '语义搜索'
+        },
+        {
+          key: '/library/feature-query',
+          icon: <SearchOutlined />,
+          label: '特征组合查询'
+        },
+        {
           key: '/library/feature-analysis',
           icon: <BarChartOutlined />,
           label: '图片库特征分析'
@@ -130,11 +140,6 @@ const MainLayout = ({ children }) => {
           key: '/library/keywords',
           icon: <TagOutlined />,
           label: '关键字查看'
-        },
-        {
-          key: '/semantic-search',
-          icon: <SearchOutlined />,
-          label: '语义搜索'
         },
         {
           key: '/semantic-search/settings',

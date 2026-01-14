@@ -151,7 +151,7 @@ def create_feature_style_definition():
         if not data.get('name'):
             return jsonify({'code': 400, 'message': '风格定义名称不能为空'}), 400
         
-        # 检查名称是否已存在
+        # 检查名称是否已存在（使用锁机制避免并发问题）
         existing = FeatureStyleDefinition.query.filter_by(name=data['name']).first()
         if existing:
             return jsonify({'code': 400, 'message': '风格定义名称已存在'}), 400
@@ -185,15 +185,22 @@ def create_feature_style_definition():
             })
         
         # 创建特征风格定义
-        definition = FeatureStyleDefinition(
-            name=data['name'],
-            description=data.get('description'),
-            dimensions_json=json.dumps(validated_dimensions, ensure_ascii=False),
-            status=data.get('status', 'active')
-        )
-        
-        db.session.add(definition)
-        db.session.commit()
+        try:
+            definition = FeatureStyleDefinition(
+                name=data['name'],
+                description=data.get('description'),
+                dimensions_json=json.dumps(validated_dimensions, ensure_ascii=False),
+                status=data.get('status', 'active')
+            )
+            
+            db.session.add(definition)
+            db.session.commit()
+        except Exception as db_error:
+            db.session.rollback()
+            # 检查是否是重复键错误
+            if 'Duplicate entry' in str(db_error) or '1062' in str(db_error):
+                return jsonify({'code': 400, 'message': '风格定义名称已存在，请使用其他名称'}), 400
+            raise
         
         return jsonify({
             'code': 200,
@@ -327,69 +334,90 @@ def generate_sub_styles(definition_id):
         dimension_names = [dim['dimension_name'] for dim in dimensions_data]
         dimension_values = [dim['values'] for dim in dimensions_data]
         
-        # 计算所有组合
+        # 计算组合总数（不实际生成，只计算数量）
+        total_combinations = 1
+        for values in dimension_values:
+            total_combinations *= len(values)
+        
+        # 检查组合数量是否超过限制
+        MAX_COMBINATIONS = 10000
+        if total_combinations > MAX_COMBINATIONS:
+            return jsonify({
+                'code': 400,
+                'message': f'组合数量过多（{total_combinations} 个），超过最大限制（{MAX_COMBINATIONS} 个）。请减少维度或特征值的数量。'
+            }), 400
+        
+        # 计算所有组合（在内存中）
         combinations = list(product(*dimension_values))
+        current_app.logger.info(f"计算得到 {len(combinations)} 个维度组合")
         
-        # 创建子风格并匹配图片
-        created_count = 0
-        total_matched_images = 0
+        # 先在内存中匹配所有组合的图片，只保存有图片的组合
+        valid_combinations = []  # 存储有图片的组合及其匹配的图片ID列表
         
-        for combination in combinations:
+        for idx, combination in enumerate(combinations):
             # 构建维度值组合字典
             dimension_values_dict = {dimension_names[i]: combination[i] for i in range(len(dimension_names))}
             
-            # 生成子风格名称（格式：维度1值1-维度2值2-...）
-            sub_style_name = '-'.join([f"{dimension_names[i]}{combination[i]}" for i in range(len(combination))])
+            # 在内存中匹配图片（不访问数据库创建记录）
+            matched_image_ids = _match_images_by_dimension_values(
+                dimension_values_dict, 
+                feature_name_to_id
+            )
             
+            # 只保存有图片的组合
+            if matched_image_ids:
+                # 生成子风格名称（格式：维度1值1-维度2值2-...）
+                sub_style_name = '-'.join([f"{dimension_names[i]}{combination[i]}" for i in range(len(combination))])
+                
+                valid_combinations.append({
+                    'name': sub_style_name,
+                    'dimension_values_dict': dimension_values_dict,
+                    'image_ids': matched_image_ids,
+                    'image_count': len(matched_image_ids)
+                })
+                
+                if (idx + 1) % 10 == 0:
+                    current_app.logger.info(f"已处理 {idx + 1}/{len(combinations)} 个组合，找到 {len(valid_combinations)} 个有效组合")
+        
+        current_app.logger.info(f"共找到 {len(valid_combinations)} 个有图片的组合，将保存到数据库")
+        
+        # 批量创建子风格和图片关联（只保存有图片的组合）
+        created_count = 0
+        total_matched_images = 0
+        
+        for combo_data in valid_combinations:
             # 检查是否已存在（理论上不应该存在，因为已经删除了）
             existing = FeatureStyleSubStyle.query.filter_by(
                 feature_style_definition_id=definition_id,
-                name=sub_style_name
+                name=combo_data['name']
             ).first()
             
             if not existing:
+                # 创建子风格
                 sub_style = FeatureStyleSubStyle(
                     feature_style_definition_id=definition_id,
-                    name=sub_style_name,
-                    dimension_values_json=json.dumps(dimension_values_dict, ensure_ascii=False),
-                    description=f"维度组合：{sub_style_name}"
+                    name=combo_data['name'],
+                    dimension_values_json=json.dumps(combo_data['dimension_values_dict'], ensure_ascii=False),
+                    description=f"维度组合：{combo_data['name']}",
+                    image_count=combo_data['image_count']
                 )
                 db.session.add(sub_style)
                 db.session.flush()  # 获取sub_style.id
                 
-                # 匹配图片：根据维度值组合查找匹配的图片
-                matched_image_ids = _match_images_by_dimension_values(
-                    dimension_values_dict, 
-                    feature_name_to_id
-                )
-                
-                # 添加匹配的图片到子风格
-                matched_count = 0
-                for image_id in matched_image_ids:
-                    # 检查是否已存在
-                    existing_image = FeatureStyleSubStyleImage.query.filter_by(
+                # 批量添加图片关联
+                for image_id in combo_data['image_ids']:
+                    sub_style_image = FeatureStyleSubStyleImage(
                         sub_style_id=sub_style.id,
                         image_id=image_id
-                    ).first()
-                    
-                    if not existing_image:
-                        sub_style_image = FeatureStyleSubStyleImage(
-                            sub_style_id=sub_style.id,
-                            image_id=image_id
-                        )
-                        db.session.add(sub_style_image)
-                        matched_count += 1
+                    )
+                    db.session.add(sub_style_image)
                 
-                # 更新子风格的图片数量
-                sub_style.image_count = matched_count
-                total_matched_images += matched_count
                 created_count += 1
-                
-                current_app.logger.info(f"子风格 {sub_style_name} 匹配到 {matched_count} 张图片")
+                total_matched_images += combo_data['image_count']
         
         db.session.commit()
         
-        current_app.logger.info(f"为特征风格定义 {definition.name} 生成了 {created_count} 个子风格，共匹配 {total_matched_images} 张图片")
+        current_app.logger.info(f"为特征风格定义 {definition.name} 生成了 {created_count} 个子风格（共 {len(combinations)} 个组合，{len(combinations) - created_count} 个无图片组合已跳过），共匹配 {total_matched_images} 张图片")
         
         return jsonify({
             'code': 200,
@@ -398,6 +426,7 @@ def generate_sub_styles(definition_id):
                 'definition_id': definition_id,
                 'created_count': created_count,
                 'total_combinations': len(combinations),
+                'skipped_count': len(combinations) - created_count,
                 'total_matched_images': total_matched_images
             }
         })

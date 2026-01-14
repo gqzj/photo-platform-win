@@ -170,14 +170,20 @@ def delete_feature(feature_id):
         
         # 先清空与特征组的关联关系（避免级联删除时的期望更新行数问题）
         from app.models.feature_group import FeatureGroupFeature
-        existing_relations = FeatureGroupFeature.query.filter_by(feature_id=feature_id).all()
-        for relation in existing_relations:
-            db.session.delete(relation)
+        # 使用 SQL 直接删除，避免 SQLAlchemy 的关联更新问题
+        FeatureGroupFeature.query.filter_by(feature_id=feature_id).delete(synchronize_session=False)
+        
         # 刷新session以确保删除操作被记录
         db.session.flush()
         
-        # 删除特征
-        db.session.delete(feature)
+        # 从 session 中移除 feature 对象，避免关联更新
+        db.session.expunge(feature)
+        
+        # 重新查询并删除（确保是干净的状态）
+        feature = Feature.query.get(feature_id)
+        if feature:
+            db.session.delete(feature)
+        
         db.session.commit()
         
         return jsonify({
@@ -206,16 +212,22 @@ def batch_delete_features():
         deleted_count = 0
         
         for feature in features:
-            # 先清空与特征组的关联关系（避免级联删除时的期望更新行数问题）
-            existing_relations = FeatureGroupFeature.query.filter_by(feature_id=feature.id).all()
-            for relation in existing_relations:
-                db.session.delete(relation)
-            # 删除特征
-            db.session.delete(feature)
+            # 先清空与特征组的关联关系（使用 SQL 直接删除，避免 SQLAlchemy 的关联更新问题）
+            FeatureGroupFeature.query.filter_by(feature_id=feature.id).delete(synchronize_session=False)
             deleted_count += 1
         
-        # 刷新session以确保所有操作被记录
+        # 刷新session以确保删除操作被记录
         db.session.flush()
+        
+        # 从 session 中移除所有 feature 对象，避免关联更新
+        for feature in features:
+            db.session.expunge(feature)
+        
+        # 重新查询并删除（确保是干净的状态）
+        features_to_delete = Feature.query.filter(Feature.id.in_(feature_ids)).all()
+        for feature in features_to_delete:
+            db.session.delete(feature)
+        
         db.session.commit()
         
         return jsonify({

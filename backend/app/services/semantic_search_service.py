@@ -14,6 +14,41 @@ from app.utils.config_manager import get_local_image_dir
 # 延迟导入CLIP和FAISS，避免启动时就必须安装
 CLIP_AVAILABLE = False
 CLIP_MODULE = None
+
+def _disable_proxy_for_download():
+    """临时禁用代理环境变量，用于模型下载"""
+    original_proxies = {}
+    proxy_env_vars = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy', 'SOCKS_PROXY', 'socks_proxy']
+    for var in proxy_env_vars:
+        if var in os.environ:
+            original_proxies[var] = os.environ[var]
+            del os.environ[var]
+    
+    # 设置 NO_PROXY 为 *，确保所有请求都不使用代理
+    if 'NO_PROXY' not in os.environ:
+        original_proxies['NO_PROXY'] = None
+    original_no_proxy = os.environ.get('NO_PROXY', '')
+    os.environ['NO_PROXY'] = '*'
+    original_proxies['_NO_PROXY'] = original_no_proxy
+    
+    return original_proxies
+
+def _restore_proxy(original_proxies):
+    """恢复代理环境变量"""
+    for var, value in original_proxies.items():
+        if var == '_NO_PROXY':
+            # 恢复 NO_PROXY
+            if value:
+                os.environ['NO_PROXY'] = value
+            elif 'NO_PROXY' in os.environ:
+                del os.environ['NO_PROXY']
+        elif var == 'NO_PROXY' and value is None:
+            # 如果原来没有 NO_PROXY，删除它
+            if 'NO_PROXY' in os.environ:
+                del os.environ['NO_PROXY']
+        else:
+            os.environ[var] = value
+
 try:
     import clip
     CLIP_MODULE = clip
@@ -21,10 +56,15 @@ try:
 except ImportError:
     try:
         # 尝试使用open-clip-torch作为替代
-        import open_clip
-        CLIP_MODULE = open_clip
-        CLIP_AVAILABLE = True
-        logging.info("使用open-clip-torch作为CLIP替代")
+        # 在导入前禁用代理，避免下载模型时出现代理错误
+        original_proxies = _disable_proxy_for_download()
+        try:
+            import open_clip
+            CLIP_MODULE = open_clip
+            CLIP_AVAILABLE = True
+            logging.info("使用open-clip-torch作为CLIP替代")
+        finally:
+            _restore_proxy(original_proxies)
     except ImportError:
         CLIP_AVAILABLE = False
         logging.warning("CLIP模块未安装，语义搜索功能将不可用。请运行: pip install open-clip-torch 或 pip install git+https://github.com/openai/CLIP.git")
@@ -77,18 +117,26 @@ class SemanticSearchService:
             raise ImportError("FAISS模块未安装，请运行: pip install faiss-cpu 或 pip install faiss-gpu")
         
         try:
-            # 加载CLIP模型
-            logger.info("正在加载CLIP ViT-L/14模型...")
-            if CLIP_MODULE.__name__ == 'clip':
-                # 使用原始CLIP
-                self.model, self.preprocess = CLIP_MODULE.load("ViT-L/14", device=self.device, jit=False)
-                self._use_open_clip = False
-            else:
-                # 使用open-clip-torch
-                model, _, preprocess = CLIP_MODULE.create_model_and_transforms('ViT-L-14', pretrained='openai')
-                self.model = model.to(self.device)
-                self.preprocess = preprocess
-                self._use_open_clip = True
+            # 临时禁用代理，避免下载模型时出现代理错误（特别是socks4代理）
+            original_proxies = _disable_proxy_for_download()
+            
+            try:
+                # 加载CLIP模型
+                logger.info("正在加载CLIP ViT-L/14模型...")
+                if CLIP_MODULE.__name__ == 'clip':
+                    # 使用原始CLIP
+                    self.model, self.preprocess = CLIP_MODULE.load("ViT-L/14", device=self.device, jit=False)
+                    self._use_open_clip = False
+                else:
+                    # 使用open-clip-torch
+                    # 确保在下载模型时没有代理
+                    model, _, preprocess = CLIP_MODULE.create_model_and_transforms('ViT-L-14', pretrained='openai')
+                    self.model = model.to(self.device)
+                    self.preprocess = preprocess
+                    self._use_open_clip = True
+            finally:
+                # 恢复原始代理设置
+                _restore_proxy(original_proxies)
             
             # ✅ Windows显存优化：使用半精度（如果使用CUDA）
             if self.device == "cuda" and not self._use_open_clip:

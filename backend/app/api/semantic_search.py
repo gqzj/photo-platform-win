@@ -6,6 +6,7 @@ from flask import Blueprint, request, jsonify, current_app, send_file
 from app.database import db
 from app.models.image import Image
 from app.models.semantic_search import SemanticSearchImage
+from app.models.image_recycle import ImageRecycle
 from app.services.semantic_search_service import get_semantic_search_service
 from app.utils.config_manager import get_local_image_dir
 from threading import Thread
@@ -327,4 +328,76 @@ def get_encoding_status():
     except Exception as e:
         error_detail = traceback.format_exc()
         current_app.logger.error(f"获取编码任务状态失败: {error_detail}")
+        return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
+
+@bp.route('/images/<int:image_id>/recycle', methods=['POST'])
+def recycle_image(image_id):
+    """将语义搜索结果中的图片移动到回收站（人工删除）"""
+    try:
+        image = Image.query.get_or_404(image_id)
+        
+        # 移动到回收站
+        recycle_data = {
+            'original_image_id': image.id,
+            'filename': image.filename,
+            'storage_path': image.storage_path,
+            'original_url': image.original_url,
+            'status': 'recycled',
+            'created_at': image.created_at,
+            'storage_mode': image.storage_mode,
+            'source_site': image.source_site,
+            'keyword': image.keyword,
+            'hash_tags_json': image.hash_tags_json,
+            'visit_url': image.visit_url,
+            'image_hash': image.image_hash,
+            'width': image.width,
+            'height': image.height,
+            'format': image.format,
+            'cleaning_reason': '人工删除',  # 清洗原因：人工删除
+            'recycled_at': datetime.now()
+        }
+        
+        recycle_obj = ImageRecycle(**recycle_data)
+        db.session.add(recycle_obj)
+        
+        # 删除语义搜索索引中的记录
+        semantic_search_image = SemanticSearchImage.query.filter_by(image_id=image_id).first()
+        if semantic_search_image:
+            # 从FAISS索引中删除
+            try:
+                service = get_semantic_search_service()
+                service.initialize()
+                service.delete_image_vector(image_id)
+            except Exception as e:
+                current_app.logger.warning(f"从语义搜索索引中删除图片失败: {str(e)}")
+            
+            # 从数据库删除语义搜索记录
+            db.session.delete(semantic_search_image)
+        
+        # 删除所有相关的样本集图片关联记录（避免外键约束错误）
+        from app.models.sample_set import SampleSetImage
+        SampleSetImage.query.filter_by(image_id=image_id).delete()
+        
+        # 删除该图片的美学评分记录（避免外键约束错误）
+        from app.models.aesthetic_score import AestheticScore
+        AestheticScore.query.filter_by(image_id=image_id).delete()
+        
+        # 从images表删除
+        db.session.delete(image)
+        
+        db.session.commit()
+        
+        current_app.logger.info(f"图片已移动到回收站: image_id={image_id}, reason=人工删除")
+        
+        return jsonify({
+            'code': 200,
+            'message': '图片已移动到回收站',
+            'data': {
+                'image_id': image_id
+            }
+        })
+    except Exception as e:
+        db.session.rollback()
+        error_detail = traceback.format_exc()
+        current_app.logger.error(f"移动图片到回收站失败: {error_detail}")
         return jsonify({'code': 500, 'message': str(e), 'detail': error_detail}), 500
